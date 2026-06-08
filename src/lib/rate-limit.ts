@@ -1,7 +1,6 @@
 import { sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
-import { rateLimitBuckets } from "@/db/schema";
 
 export function getClientIp(request: NextRequest): string {
   return (
@@ -29,17 +28,17 @@ export async function rateLimit(
     const resetAt = new Date(windowStart.getTime() + windowMs);
     const retryAfter = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
 
-    // Atomic upsert: insert row with count=1, or increment existing count.
-    const [row] = await db
-      .insert(rateLimitBuckets)
-      .values({ key, windowStart, count: 1 })
-      .onConflictDoUpdate({
-        target: [rateLimitBuckets.key, rateLimitBuckets.windowStart],
-        set: { count: sql`${rateLimitBuckets.count} + 1` },
-      })
-      .returning({ count: rateLimitBuckets.count });
+    // Raw SQL upsert — Drizzle ORM's onConflictDoUpdate silently fails in
+    // some Vercel serverless builds; raw execute is proven reliable.
+    const rows = await db.execute<{ count: number }>(sql`
+      INSERT INTO rate_limit_buckets (key, window_start, count)
+      VALUES (${key}, ${windowStart}, 1)
+      ON CONFLICT (key, window_start)
+      DO UPDATE SET count = rate_limit_buckets.count + 1
+      RETURNING count
+    `);
 
-    const count = row?.count ?? 1;
+    const count = Number(rows[0]?.count ?? 1);
 
     // Probabilistic cleanup: purge expired buckets on ~1 % of requests
     // so the table stays bounded without a separate cron job.
@@ -65,8 +64,9 @@ export async function rateLimit(
     }
 
     return null;
-  } catch {
+  } catch (err) {
     // Fail open: a DB hiccup should not take the API down.
+    console.error("[rate-limit] error:", (err as Error).message);
     return null;
   }
 }
