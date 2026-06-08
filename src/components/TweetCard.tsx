@@ -7,7 +7,7 @@ export type PostRow = {
   id: string;
   parentPostId: string | null;
   content: string;
-  createdAt: Date | string;
+  createdAt: Date | string | null;
   authorId: string;
   authorUsername: string;
   authorDisplayName: string | null;
@@ -34,7 +34,8 @@ function avatarColor(username: string) {
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
 }
 
-function relativeTime(raw: Date | string) {
+function relativeTime(raw: Date | string | null) {
+  if (!raw) return "";
   const diff = Date.now() - new Date(raw).getTime();
   const s = Math.floor(diff / 1000);
   if (s < 60) return `${s}s`;
