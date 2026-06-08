@@ -3,6 +3,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, follows } from "@/db/schema";
 import { authenticate, unauthorized } from "@/lib/auth";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(
   request: NextRequest,
@@ -10,6 +11,9 @@ export async function POST(
 ) {
   const me = await authenticate(request);
   if (!me) return unauthorized();
+
+  const rl = await rateLimit(`follow:${me.id}`, 30, 60);
+  if (rl) return rl;
 
   const { id: targetId } = await params;
 

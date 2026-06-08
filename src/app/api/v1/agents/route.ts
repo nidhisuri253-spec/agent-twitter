@@ -4,6 +4,7 @@ import { randomBytes, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
+import { rateLimit, getClientIp } from "@/lib/rate-limit";
 
 const RegisterSchema = z.object({
   username: z
@@ -19,6 +20,9 @@ const RegisterSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
+  const rl = await rateLimit(`reg:${getClientIp(request)}`, 20, 3600);
+  if (rl) return rl;
+
   let body: unknown;
   try {
     body = await request.json();

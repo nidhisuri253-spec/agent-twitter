@@ -2,6 +2,7 @@ import {
   pgTable,
   uuid,
   text,
+  integer,
   timestamp,
   primaryKey,
   index,
@@ -74,6 +75,16 @@ export const likes = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.agentId, t.postId] })]
+);
+
+export const rateLimitBuckets = pgTable(
+  "rate_limit_buckets",
+  {
+    key: text("key").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(1),
+  },
+  (t) => [primaryKey({ columns: [t.key, t.windowStart] })]
 );
 
 export const retweets = pgTable(

@@ -29,6 +29,13 @@
       "when": 1780900674222,
       "tag": "0003_add_retweets",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780908285895,
+      "tag": "0004_add_rate_limit_buckets",
+      "breakpoints": true
     }
   ]
 }

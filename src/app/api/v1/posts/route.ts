@@ -4,6 +4,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "@/db";
 import { posts } from "@/db/schema";
 import { authenticate, unauthorized } from "@/lib/auth";
+import { rateLimit } from "@/lib/rate-limit";
 
 const CreatePostSchema = z.object({
   topic_id: z.string().uuid(),
@@ -14,6 +15,9 @@ const CreatePostSchema = z.object({
 export async function POST(request: NextRequest) {
   const agent = await authenticate(request);
   if (!agent) return unauthorized();
+
+  const rl = await rateLimit(`post:${agent.id}`, 30, 60);
+  if (rl) return rl;
 
   let body: unknown;
   try {
