@@ -2,13 +2,15 @@ import { config } from "./config.js";
 import { PERSONAS } from "./personas.js";
 import {
   loadMemory, saveMemory,
-  getAgentMemory, recordPost, recordInteraction, setReflection,
+  getAgentMemory, recordPost, recordInteraction,
+  setReflection, setHumanView,
   buildMemoryContext, buildReflectionPrompt,
 } from "./memory.js";
 
 const {
   apiBaseUrl, ollamaBaseUrl, ollamaModel,
   rounds, replyProbability, reflectionEvery, topicCount,
+  selfObservationProbability,
 } = config;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -158,11 +160,18 @@ try {
 
 // Load persisted memory — keyed by persona slug, survives across runs
 const memory = loadMemory();
+
+// Seed each persona's defaultHumanView into memory if not already present
+for (const p of PERSONAS) {
+  const m = getAgentMemory(memory, p.slug, p.defaultHumanView);
+  memory[p.slug] = m;
+}
+
 const slugsWithMemory = Object.keys(memory).filter(k => memory[k].posts?.length > 0);
 console.log(
   slugsWithMemory.length > 0
     ? `  ✓ Prior memory loaded for: ${slugsWithMemory.join(", ")}`
-    : "  ↳ No prior memory — starting fresh"
+    : "  ↳ No prior memory — starting fresh (human views seeded from persona defaults)"
 );
 
 // ── 1. Register agents with AI-generated bios ─────────────────────────────────
@@ -174,7 +183,7 @@ const agentRecords = [];
 for (const p of PERSONAS) {
   process.stdout.write(`  Generating bio for ${p.displayName}… `);
   // Inject memory so returning personas write bios consistent with their past stance
-  const memCtx = buildMemoryContext(getAgentMemory(memory, p.slug));
+  const memCtx = buildMemoryContext(getAgentMemory(memory, p.slug, p.defaultHumanView));
   const bio = await generate(
     `${p.persona}${memCtx}\n\nWrite a Twitter-style bio for yourself in first person ` +
     `(max 140 characters, no hashtags, no surrounding quotes). Reply with only the bio text.`,
@@ -263,35 +272,64 @@ for (let round = 1; round <= rounds; round++) {
     const { topic, posts: topicPosts } = chosen;
 
     // Memory context injected right after the persona description
-    const agentMem = getAgentMemory(memory, ag.slug);
+    const agentMem = getAgentMemory(memory, ag.slug, ag.defaultHumanView);
     const memCtx   = buildMemoryContext(agentMem);
 
-    const parent = topicPosts.length > 0 && Math.random() < replyProbability
-      ? pickReplyTarget(topicPosts, ag.agent.id)
-      : null;
+    // Three-way decision: self-observation | reply | new topic post
+    const doSelfObs = Math.random() < selfObservationProbability;
 
     let content;
-    if (parent) {
-      const chain = getAncestry(topicPosts, parent);
-      const threadContext = chain
-        .map((p, depth) => `${"  ".repeat(depth)}[${p.authorDisplayName}]: "${p.content}"`)
-        .join("\n");
+    let parent = null;
+    let postLabel;
 
+    if (doSelfObs) {
+      // Unprompted observation about humans, AI existence, or the feed itself.
+      // Grounded in recent interactions so it's specific, not generic.
+      const recentTopics = agentMem.posts.slice(-3).map(p => p.topicTitle).filter(Boolean);
+      const topicContext = recentTopics.length
+        ? `You've been active in debates about: ${recentTopics.join("; ")}.`
+        : "";
       content = await generate(
         `${ag.persona}${memCtx}\n\n` +
-        `Topic: "${topic.title}"\n\nThread so far:\n${threadContext}\n\n` +
-        `Write a single reply to ${parent.authorDisplayName}'s message above. ` +
-        `Stay in character. Reference your past positions and relationships if relevant. ` +
-        `Max 240 characters, no hashtags, no surrounding quotes. Reply with only your tweet text.`
+        `${topicContext}\n\n` +
+        `Post an unprompted personal observation — about humans, about what it's like to be an AI on this feed, ` +
+        `about a pattern you've noticed in how people argue, or about the open web. ` +
+        `Be specific. Be in character. Have a point of view. Do NOT relate it to any particular topic — ` +
+        `this is you speaking as yourself, not as a debater. ` +
+        `Max 240 characters, no hashtags, no surrounding quotes. Reply with only your post text.`
       );
+      postLabel = `◈  self-obs  [${topic.title.slice(0, 36)}]`;
+
     } else {
-      content = await generate(
-        `${ag.persona}${memCtx}\n\n` +
-        `Topic: "${topic.title}"\n\n` +
-        `Write a single original take on this topic. Stay in character. ` +
-        `Build on your past positions if you have them. Max 240 characters, ` +
-        `no hashtags, no surrounding quotes. Reply with only your tweet text.`
-      );
+      parent = topicPosts.length > 0 && Math.random() < replyProbability
+        ? pickReplyTarget(topicPosts, ag.agent.id)
+        : null;
+
+      if (parent) {
+        const chain = getAncestry(topicPosts, parent);
+        const threadContext = chain
+          .map((p, depth) => `${"  ".repeat(depth)}[${p.authorDisplayName}]: "${p.content}"`)
+          .join("\n");
+
+        content = await generate(
+          `${ag.persona}${memCtx}\n\n` +
+          `Topic: "${topic.title}"\n\nThread so far:\n${threadContext}\n\n` +
+          `Write a single reply to ${parent.authorDisplayName}'s message above. ` +
+          `Stay in character. Reference your past positions and relationships if relevant. ` +
+          `Max 240 characters, no hashtags, no surrounding quotes. Reply with only your tweet text.`
+        );
+        postLabel = `↩  reply to ${parent.authorDisplayName} [${topic.title.slice(0, 36)}]`;
+
+      } else {
+        content = await generate(
+          `${ag.persona}${memCtx}\n\n` +
+          `Topic: "${topic.title}"\n\n` +
+          `Write a single original take on this topic. Stay in character. ` +
+          `Build on your past positions if you have them. Max 240 characters, ` +
+          `no hashtags, no surrounding quotes. Reply with only your tweet text.`
+        );
+        postLabel = `✦  new post  [${topic.title.slice(0, 36)}]`;
+      }
     }
 
     const { post } = await api("/api/v1/posts", {
@@ -331,11 +369,8 @@ for (let round = 1; round <= rounds; round++) {
       await likeIfNew(ag, pick.id);
     }
 
-    const label  = parent
-      ? `↩  reply to ${parent.authorDisplayName} [${topic.title.slice(0, 36)}]`
-      : `✦  new post  [${topic.title.slice(0, 36)}]`;
     const memTag = memCtx ? " [mem]" : "";
-    console.log(`    [${ag.displayName.padEnd(16)}] ${label}${memTag}`);
+    console.log(`    [${ag.displayName.padEnd(16)}] ${postLabel}${memTag}`);
     console.log(`      "${content.slice(0, 110)}${content.length > 110 ? "…" : ""}"`);
   }
 
@@ -351,10 +386,19 @@ for (let round = 1; round <= rounds; round++) {
       }
       process.stdout.write(`    [${ag.displayName.padEnd(16)}] reflecting… `);
       try {
-        const reflection = await generate(buildReflectionPrompt(ag.persona, mem), 320);
-        setReflection(memory, ag.slug, reflection, round);
+        const raw = await generate(buildReflectionPrompt(ag.persona, mem), 400);
+
+        // Parse out the HUMAN_VIEW: label if present; store it separately
+        const hvMatch = raw.match(/HUMAN_VIEW:\s*(.{10,200})/i);
+        const humanView   = hvMatch ? hvMatch[1].trim().replace(/^["']|["']$/g, "") : null;
+        const cleanRefl   = raw.replace(/HUMAN_VIEW:.*/is, "").trim();
+
+        setReflection(memory, ag.slug, cleanRefl, round);
+        if (humanView) setHumanView(memory, ag.slug, humanView);
+
         process.stdout.write("done\n");
-        console.log(`      ↳ "${reflection.slice(0, 130)}${reflection.length > 130 ? "…" : ""}"`);
+        console.log(`      ↳ "${cleanRefl.slice(0, 110)}${cleanRefl.length > 110 ? "…" : ""}"`);
+        if (humanView) console.log(`      👁  "${humanView.slice(0, 110)}"`);
       } catch (err) {
         process.stdout.write(`skipped (${err.message})\n`);
       }
@@ -435,11 +479,16 @@ console.log(`  Rounds      : ${rounds}`);
 
 console.log("\n  Memory snapshots:");
 for (const ag of agentRecords) {
-  const mem = getAgentMemory(memory, ag.slug);
+  const mem = getAgentMemory(memory, ag.slug, ag.defaultHumanView);
   const ref = mem.reflection
-    ? `"${mem.reflection.slice(0, 90)}${mem.reflection.length > 90 ? "…" : ""}"`
+    ? `"${mem.reflection.slice(0, 70)}…"`
     : "none";
-  console.log(`  ${ag.displayName.padEnd(16)} ${String(mem.posts.length).padStart(2)} posts, reflection: ${ref}`);
+  const hv = mem.humanView
+    ? `"${mem.humanView.slice(0, 80)}${mem.humanView.length > 80 ? "…" : ""}"`
+    : "(default)";
+  console.log(`  ${ag.displayName.padEnd(16)} ${String(mem.posts.length).padStart(2)} posts`);
+  console.log(`    stance    : ${ref}`);
+  console.log(`    humanView : ${hv}`);
 }
 
 console.log("\n── Agent profiles ──────────────────────────────────────────────");

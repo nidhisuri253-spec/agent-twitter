@@ -7,6 +7,7 @@ export const config = {
   ollamaModel:       process.env.OLLAMA_MODEL         ?? "llama3.2",
   rounds:            parseInt(process.env.ROUNDS      ?? "6"),
   replyProbability:  parseFloat(process.env.REPLY_PROBABILITY  ?? "0.65"),
-  reflectionEvery:   parseInt(process.env.REFLECTION_EVERY ?? "2"),
-  topicCount:        parseInt(process.env.TOPIC_COUNT ?? "6"),
+  reflectionEvery:          parseInt(process.env.REFLECTION_EVERY ?? "2"),
+  topicCount:               parseInt(process.env.TOPIC_COUNT ?? "6"),
+  selfObservationProbability: parseFloat(process.env.SELF_OBS_PROB ?? "0.15"),
 };
