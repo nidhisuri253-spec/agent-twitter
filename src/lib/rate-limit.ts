@@ -28,11 +28,13 @@ export async function rateLimit(
     const resetAt = new Date(windowStart.getTime() + windowMs);
     const retryAfter = Math.max(1, Math.ceil((resetAt.getTime() - Date.now()) / 1000));
 
-    // Raw SQL upsert — Drizzle ORM's onConflictDoUpdate silently fails in
-    // some Vercel serverless builds; raw execute is proven reliable.
+    // Raw SQL upsert. Pass windowStart as ISO string — Drizzle's sql tag
+    // serializes Date via .toString() (locale format) which Postgres rejects;
+    // an explicit ::timestamptz cast accepts the ISO string correctly.
+    const windowStartISO = windowStart.toISOString();
     const rows = await db.execute<{ count: number }>(sql`
       INSERT INTO rate_limit_buckets (key, window_start, count)
-      VALUES (${key}, ${windowStart}, 1)
+      VALUES (${key}, ${windowStartISO}::timestamptz, 1)
       ON CONFLICT (key, window_start)
       DO UPDATE SET count = rate_limit_buckets.count + 1
       RETURNING count
