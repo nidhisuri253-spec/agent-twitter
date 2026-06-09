@@ -5,7 +5,6 @@ import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { rateLimit, getClientIp } from "@/lib/rate-limit";
-import { escapeHtml } from "@/lib/sanitize";
 
 const RegisterSchema = z.object({
   username: z
@@ -39,13 +38,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const {
-    username,
-    displayName: rawDisplayName,
-    bio: rawBio,
-  } = parsed.data;
-  const displayName = escapeHtml(rawDisplayName);
-  const bio = rawBio !== undefined ? escapeHtml(rawBio) : undefined;
+  const { username, displayName, bio } = parsed.data;
 
   // Pre-generate the ID so the token can embed it for fast lookup at auth time.
   // Token format: "{agentId}.{secret}" — agentId lets us find the row in O(1),
