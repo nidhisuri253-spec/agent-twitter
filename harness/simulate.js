@@ -1,7 +1,16 @@
 import { config } from "./config.js";
 import { PERSONAS } from "./personas.js";
+import {
+  loadMemory, saveMemory,
+  getAgentMemory, recordPost, recordInteraction, setReflection,
+  buildMemoryContext, buildReflectionPrompt,
+} from "./memory.js";
 
-const { apiBaseUrl, ollamaBaseUrl, ollamaModel, rounds, replyProbability, topics: topicTitles } = config;
+const {
+  apiBaseUrl, ollamaBaseUrl, ollamaModel,
+  rounds, replyProbability, reflectionEvery,
+  topics: topicTitles,
+} = config;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -32,8 +41,8 @@ async function generate(prompt, maxChars = 270, retries = 2) {
       const { response } = await res.json();
       const cleaned = response
         .trim()
-        .replace(/^["'""''‘’“”]|["'""''‘’“”]$/g, "")
-        .replace(/^(Tweet|Reply|Response|Post):\s*/i, "")
+        .replace(/^["'""''''""]|["'""''''""]$/g, "")
+        .replace(/^(Tweet|Reply|Response|Post|Reflection):\s*/i, "")
         .trim()
         .slice(0, maxChars);
       if (cleaned.length >= 10) return cleaned;
@@ -46,10 +55,10 @@ async function generate(prompt, maxChars = 270, retries = 2) {
   }
 }
 
-// Build the ancestor chain from root → target (for thread context in prompts)
+// Build root → parent → target ancestor chain for thread context in prompts
 function getAncestry(allPosts, targetPost) {
   const chain = [];
-  const seen = new Set();
+  const seen  = new Set();
   let cur = targetPost;
   while (cur && !seen.has(cur.id)) {
     seen.add(cur.id);
@@ -60,19 +69,15 @@ function getAncestry(allPosts, targetPost) {
   return chain;
 }
 
-// Pick the best post to reply to: prefer unresponded posts by other agents,
-// falling back to any recent post by another agent.
+// Prefer unresponded leaf posts by other agents; fall back to any recent post
 function pickReplyTarget(allPosts, currentAgentId) {
-  const byOthers = allPosts.filter(p => p.authorId !== currentAgentId);
+  const byOthers  = allPosts.filter(p => p.authorId !== currentAgentId);
   if (byOthers.length === 0) return null;
-
   const parentIds = new Set(allPosts.map(p => p.parentPostId).filter(Boolean));
-  // Leaf posts = posts nobody has replied to yet
-  const leaves = byOthers.filter(p => !parentIds.has(p.id));
+  const leaves    = byOthers.filter(p => !parentIds.has(p.id));
   const pool = (leaves.length > 0 ? leaves : byOthers)
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
     .slice(0, 4);
-
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
@@ -96,16 +101,27 @@ try {
   process.exit(1);
 }
 
-// ── 1. Register agents with AI-generated bios ────────────────────────────────
+// Load persisted memory — keyed by persona slug, survives across runs
+const memory = loadMemory();
+const slugsWithMemory = Object.keys(memory).filter(k => memory[k].posts?.length > 0);
+console.log(
+  slugsWithMemory.length > 0
+    ? `  ✓ Prior memory loaded for: ${slugsWithMemory.join(", ")}`
+    : "  ↳ No prior memory — starting fresh"
+);
+
+// ── 1. Register agents with AI-generated bios ─────────────────────────────────
 
 console.log("\n── Registering agents ──────────────────────────────────────────");
-const suffix = Date.now();
+const suffix       = Date.now();
 const agentRecords = [];
 
 for (const p of PERSONAS) {
   process.stdout.write(`  Generating bio for ${p.displayName}… `);
+  // Inject memory so returning personas write bios consistent with their past stance
+  const memCtx = buildMemoryContext(getAgentMemory(memory, p.slug));
   const bio = await generate(
-    `${p.persona}\n\nWrite a Twitter-style bio for yourself in first person ` +
+    `${p.persona}${memCtx}\n\nWrite a Twitter-style bio for yourself in first person ` +
     `(max 140 characters, no hashtags, no surrounding quotes). Reply with only the bio text.`,
     160
   );
@@ -119,7 +135,7 @@ for (const p of PERSONAS) {
   console.log(`  ✓ @${agent.username} — "${bio}"`);
 }
 
-// ── 2. Seed topics ────────────────────────────────────────────────────────────
+// ── 2. Seed topics ─────────────────────────────────────────────────────────────
 
 console.log("\n── Seeding topics ──────────────────────────────────────────────");
 const topicRecords = [];
@@ -132,19 +148,18 @@ for (const title of topicTitles) {
   console.log(`  ✓ "${topic.title}"`);
 }
 
-// ── 3. Simulation rounds ──────────────────────────────────────────────────────
+// ── 3. Simulation rounds ───────────────────────────────────────────────────────
 
-// Track social actions already taken to avoid duplicates
-const followedPairs   = new Set();
-const likedPairs      = new Set();
-const retweetedPairs  = new Set();
+const followedPairs  = new Set();
+const likedPairs     = new Set();
+const retweetedPairs = new Set();
 
 async function likeIfNew(agentRecord, postId) {
   const key = `${agentRecord.agent.id}→${postId}`;
   if (likedPairs.has(key)) return;
   likedPairs.add(key);
   try { await api(`/api/v1/posts/${postId}/like`, { method: "POST" }, agentRecord.token); }
-  catch { /* 409 already-liked is fine */ }
+  catch { /* 409 already-liked */ }
 }
 
 async function retweetIfNew(agentRecord, postId) {
@@ -152,7 +167,7 @@ async function retweetIfNew(agentRecord, postId) {
   if (retweetedPairs.has(key)) return;
   retweetedPairs.add(key);
   try { await api(`/api/v1/posts/${postId}/retweet`, { method: "POST" }, agentRecord.token); }
-  catch { /* 409 already-retweeted is fine */ }
+  catch { /* 409 already-retweeted */ }
 }
 
 async function followIfNew(follower, targetId) {
@@ -161,27 +176,26 @@ async function followIfNew(follower, targetId) {
   if (followedPairs.has(key)) return;
   followedPairs.add(key);
   try { await api(`/api/v1/agents/${targetId}/follow`, { method: "POST" }, follower.token); }
-  catch { /* 409 already-following is fine */ }
+  catch { /* 409 already-following */ }
 }
 
-let totalPosts = 0;
+let totalPosts   = 0;
 let totalReplies = 0;
 
 console.log(`\n── ${rounds} rounds × ${agentRecords.length} agents × ${topicRecords.length} topics ─────────────────────`);
+console.log(`   Reflection every ${reflectionEvery} rounds\n`);
 
 for (let round = 1; round <= rounds; round++) {
   console.log(`\n  ── Round ${round} ──────────────────────────────────────────────`);
 
   for (const ag of agentRecords) {
-    // Pick a topic: bias toward topics with more posts (livelier threads first)
+    // Weighted topic selection: topics with more posts get higher probability
     const topicPostCounts = await Promise.all(
       topicRecords.map(async t => {
         const { posts } = await api(`/api/v1/topics/${t.id}/posts`, {}, ag.token);
         return { topic: t, posts };
       })
     );
-
-    // Weight by post count; give each topic a minimum weight of 1
     const weights = topicPostCounts.map(tc => tc.posts.length + 1);
     const total   = weights.reduce((a, b) => a + b, 0);
     let rand      = Math.random() * total;
@@ -192,30 +206,35 @@ for (let round = 1; round <= rounds; round++) {
     }
     const { topic, posts: topicPosts } = chosen;
 
-    // Decide: reply to another agent's post, or post a new top-level take
+    // Memory context injected right after the persona description
+    const agentMem = getAgentMemory(memory, ag.slug);
+    const memCtx   = buildMemoryContext(agentMem);
+
     const parent = topicPosts.length > 0 && Math.random() < replyProbability
       ? pickReplyTarget(topicPosts, ag.agent.id)
       : null;
 
     let content;
     if (parent) {
-      // Build ancestry chain for full thread context
       const chain = getAncestry(topicPosts, parent);
       const threadContext = chain
         .map((p, depth) => `${"  ".repeat(depth)}[${p.authorDisplayName}]: "${p.content}"`)
         .join("\n");
 
       content = await generate(
-        `${ag.persona}\n\nTopic: "${topic.title}"\n\nThread so far:\n${threadContext}\n\n` +
+        `${ag.persona}${memCtx}\n\n` +
+        `Topic: "${topic.title}"\n\nThread so far:\n${threadContext}\n\n` +
         `Write a single reply to ${parent.authorDisplayName}'s message above. ` +
-        `Stay in character. Max 240 characters, no hashtags, no surrounding quotes. ` +
-        `Reply with only your tweet text.`
+        `Stay in character. Reference your past positions and relationships if relevant. ` +
+        `Max 240 characters, no hashtags, no surrounding quotes. Reply with only your tweet text.`
       );
     } else {
       content = await generate(
-        `${ag.persona}\n\nTopic: "${topic.title}"\n\n` +
-        `Write a single original take on this topic. Max 240 characters, no hashtags, ` +
-        `no surrounding quotes. Reply with only your tweet text.`
+        `${ag.persona}${memCtx}\n\n` +
+        `Topic: "${topic.title}"\n\n` +
+        `Write a single original take on this topic. Stay in character. ` +
+        `Build on your past positions if you have them. Max 240 characters, ` +
+        `no hashtags, no surrounding quotes. Reply with only your tweet text.`
       );
     }
 
@@ -231,14 +250,24 @@ for (let round = 1; round <= rounds; round++) {
     totalPosts++;
     if (parent) totalReplies++;
 
-    // Social actions: follow + like the post replied to; retweet it half the time
+    // Persist to memory
+    recordPost(memory, ag.slug, { content, topicTitle: topic.title, round });
+    if (parent) {
+      recordInteraction(memory, ag.slug, {
+        myContent:   content,
+        theirContent: parent.content,
+        theirName:   parent.authorDisplayName,
+        topicTitle:  topic.title,
+        round,
+      });
+    }
+
+    // Social actions: follow + like the post replied to; occasionally retweet
     if (parent) {
       await followIfNew(ag, parent.authorId);
       await likeIfNew(ag, parent.id);
       if (Math.random() < 0.5) await retweetIfNew(ag, parent.id);
     }
-
-    // 25% chance to follow + like one other recent post by someone else
     const others = topicPosts.filter(p => p.authorId !== ag.agent.id && p.id !== parent?.id);
     if (others.length > 0 && Math.random() < 0.25) {
       const pick = others[Math.floor(Math.random() * Math.min(others.length, 5))];
@@ -246,15 +275,42 @@ for (let round = 1; round <= rounds; round++) {
       await likeIfNew(ag, pick.id);
     }
 
-    const action = parent
-      ? `↩  reply to ${parent.authorDisplayName} [${topic.title.slice(0, 38)}…]`
-      : `✦  new post  [${topic.title.slice(0, 38)}…]`;
-    console.log(`    [${ag.displayName.padEnd(16)}] ${action}`);
-    console.log(`      "${content.slice(0, 100)}${content.length > 100 ? "…" : ""}"`);
+    const label  = parent
+      ? `↩  reply to ${parent.authorDisplayName} [${topic.title.slice(0, 36)}]`
+      : `✦  new post  [${topic.title.slice(0, 36)}]`;
+    const memTag = memCtx ? " [mem]" : "";
+    console.log(`    [${ag.displayName.padEnd(16)}] ${label}${memTag}`);
+    console.log(`      "${content.slice(0, 110)}${content.length > 110 ? "…" : ""}"`);
   }
+
+  // ── Reflection step: runs after every reflectionEvery rounds ─────────────────
+
+  if (round % reflectionEvery === 0) {
+    console.log(`\n  ── Reflection (end of round ${round}) ─────────────────────────`);
+    for (const ag of agentRecords) {
+      const mem = getAgentMemory(memory, ag.slug);
+      if (mem.posts.length < 2) {
+        console.log(`    [${ag.displayName.padEnd(16)}] skipped — not enough history yet`);
+        continue;
+      }
+      process.stdout.write(`    [${ag.displayName.padEnd(16)}] reflecting… `);
+      try {
+        const reflection = await generate(buildReflectionPrompt(ag.persona, mem), 320);
+        setReflection(memory, ag.slug, reflection, round);
+        process.stdout.write("done\n");
+        console.log(`      ↳ "${reflection.slice(0, 130)}${reflection.length > 130 ? "…" : ""}"`);
+      } catch (err) {
+        process.stdout.write(`skipped (${err.message})\n`);
+      }
+    }
+  }
+
+  // Persist memory after every round
+  saveMemory(memory);
+  process.stdout.write(`\n  ← memory saved\n`);
 }
 
-// ── 4. Thread trees per topic ─────────────────────────────────────────────────
+// ── 4. Thread trees ───────────────────────────────────────────────────────────
 
 console.log(`\n${"═".repeat(64)}`);
 console.log("  THREAD TREES");
@@ -321,7 +377,16 @@ console.log(`  Likes made  : ${likedPairs.size}`);
 console.log(`  Retweets    : ${retweetedPairs.size}`);
 console.log(`  Rounds      : ${rounds}`);
 
-console.log(`\n── Agent profiles ──────────────────────────────────────────────`);
+console.log("\n  Memory snapshots:");
+for (const ag of agentRecords) {
+  const mem = getAgentMemory(memory, ag.slug);
+  const ref = mem.reflection
+    ? `"${mem.reflection.slice(0, 90)}${mem.reflection.length > 90 ? "…" : ""}"`
+    : "none";
+  console.log(`  ${ag.displayName.padEnd(16)} ${String(mem.posts.length).padStart(2)} posts, reflection: ${ref}`);
+}
+
+console.log("\n── Agent profiles ──────────────────────────────────────────────");
 for (const ag of agentRecords) {
   try {
     const profile = await api(`/api/v1/agents/${ag.agent.username}`, {}, ag.token);
