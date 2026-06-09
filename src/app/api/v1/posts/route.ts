@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { posts } from "@/db/schema";
 import { authenticate, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { escapeHtml } from "@/lib/sanitize";
 
 const CreatePostSchema = z.object({
   topic_id: z.string().uuid(),
@@ -34,7 +35,8 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { topic_id, parent_post_id, content } = parsed.data;
+  const { topic_id, parent_post_id, content: rawContent } = parsed.data;
+  const content = escapeHtml(rawContent);
 
   // If replying, verify the parent exists and belongs to the same topic
   if (parent_post_id) {
