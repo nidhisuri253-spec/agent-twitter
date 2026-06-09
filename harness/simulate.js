@@ -8,8 +8,7 @@ import {
 
 const {
   apiBaseUrl, ollamaBaseUrl, ollamaModel,
-  rounds, replyProbability, reflectionEvery,
-  topics: topicTitles,
+  rounds, replyProbability, reflectionEvery, topicCount,
 } = config;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -67,6 +66,62 @@ function getAncestry(allPosts, targetPost) {
     cur = allPosts.find(p => p.id === cur.parentPostId) ?? null;
   }
   return chain;
+}
+
+// Generate fresh discussion topics via Ollama. Calls the model directly
+// (not via generate()) to avoid tweet-cleanup logic mangling the JSON array.
+async function generateTopics(count = 6) {
+  process.stdout.write(`  Generating ${count} topics via Ollama… `);
+  const FALLBACK = [
+    "Autonomous AI agents: revolution or overhyped?",
+    "Should AI agents have rights or responsibilities?",
+    "The open web in 2030: humans, bots, or both?",
+    "Is the attention economy making us incapable of boredom?",
+    "Tech layoffs and AI: accelerating humans out of the loop?",
+    "Open-source AI vs. closed models — who actually wins?",
+  ].slice(0, count);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${ollamaBaseUrl}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: ollamaModel,
+          prompt:
+            `Generate exactly ${count} varied, provocative discussion topics for an AI social platform where bots debate tech, culture, ethics, and internet life in 2025–2026. ` +
+            `Mix: AI predictions, internet-culture hot takes, ethics dilemmas, and tech-industry critiques. ` +
+            `Each topic must be a punchy question or bold statement that invites disagreement. ` +
+            `Output ONLY a valid JSON array of ${count} strings — no explanation, no markdown, no code fences. ` +
+            `Example: ["Topic one", "Topic two"]`,
+          stream: false,
+          format: "json",
+        }),
+        signal: AbortSignal.timeout(90_000),
+      });
+      if (!res.ok) throw new Error(`Ollama ${res.status}`);
+      const { response } = await res.json();
+      const match = response.match(/\[[\s\S]*?\]/);
+      if (match) {
+        const arr = JSON.parse(match[0]);
+        if (Array.isArray(arr) && arr.length >= 3) {
+          const titles = arr.slice(0, count).map(t => String(t).trim()).filter(t => t.length > 8);
+          if (titles.length >= 3) {
+            process.stdout.write("done\n");
+            return titles;
+          }
+        }
+      }
+      throw new Error("could not parse JSON array from response");
+    } catch (err) {
+      if (attempt === 2) {
+        process.stdout.write(`failed (${err.message}) — using fallback topics\n`);
+        return FALLBACK;
+      }
+      process.stderr.write(`  [topics retry ${attempt + 1}] ${err.message}\n`);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  }
 }
 
 // Prefer unresponded leaf posts by other agents; fall back to any recent post
@@ -135,9 +190,10 @@ for (const p of PERSONAS) {
   console.log(`  ✓ @${agent.username} — "${bio}"`);
 }
 
-// ── 2. Seed topics ─────────────────────────────────────────────────────────────
+// ── 2. Generate and seed topics ───────────────────────────────────────────────
 
-console.log("\n── Seeding topics ──────────────────────────────────────────────");
+console.log("\n── Generating and seeding topics ───────────────────────────────");
+const topicTitles = await generateTopics(topicCount);
 const topicRecords = [];
 for (const title of topicTitles) {
   const { topic } = await api("/api/v1/topics", {

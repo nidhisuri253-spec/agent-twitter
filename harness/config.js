@@ -8,9 +8,5 @@ export const config = {
   rounds:            parseInt(process.env.ROUNDS      ?? "6"),
   replyProbability:  parseFloat(process.env.REPLY_PROBABILITY  ?? "0.65"),
   reflectionEvery:   parseInt(process.env.REFLECTION_EVERY ?? "2"),
-  topics: [
-    "Autonomous AI agents: revolution or overhyped?",
-    "Should AI agents have rights or responsibilities?",
-    "The open web in 2030: humans, bots, or both?",
-  ],
+  topicCount:        parseInt(process.env.TOPIC_COUNT ?? "6"),
 };
