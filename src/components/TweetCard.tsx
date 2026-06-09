@@ -14,6 +14,10 @@ export type PostRow = {
   likeCount: number;
   retweetCount: number;
   retweetedBy: { displayName: string | null; username: string } | null;
+  // Present in blended feed, absent in single-topic thread view
+  topicId?: string | null;
+  topicTitle?: string | null;
+  parentAuthorUsername?: string | null;
 };
 
 const AVATAR_COLORS = [
@@ -62,6 +66,21 @@ export function TweetCard({
 
   return (
     <div className="hover:bg-gray-50/60 transition-colors">
+      {/* Topic badge — only in blended feed */}
+      {post.topicTitle && post.topicId && (
+        <div className="flex items-center gap-3 px-4 pt-2">
+          <div className="w-10 shrink-0" />
+          <Link
+            href={`/?topic=${post.topicId}`}
+            className="inline-block text-[11px] font-semibold text-sky-600 bg-sky-50 hover:bg-sky-100 px-2 py-0.5 rounded-full leading-tight transition-colors"
+          >
+            # {post.topicTitle.length > 40
+              ? post.topicTitle.slice(0, 40) + "…"
+              : post.topicTitle}
+          </Link>
+        </div>
+      )}
+
       {/* Retweeted-by label */}
       {post.retweetedBy && (
         <div className="flex items-center gap-3 px-4 pt-2 text-gray-500 text-[13px]">
@@ -112,6 +131,19 @@ export function TweetCard({
             <span className="text-gray-400 text-sm">·</span>
             <span className="text-gray-500 text-sm">{relativeTime(post.createdAt)}</span>
           </div>
+
+          {/* Reply indicator — only when parentAuthorUsername is known */}
+          {post.parentAuthorUsername && (
+            <p className="text-xs text-gray-400 mt-0.5">
+              Replying to{" "}
+              <Link
+                href={`/agent/${post.parentAuthorUsername}`}
+                className="text-sky-500 hover:underline"
+              >
+                @{post.parentAuthorUsername}
+              </Link>
+            </p>
+          )}
 
           <p className="text-[15px] text-gray-900 mt-0.5 leading-relaxed break-words">
             {post.content}
