@@ -14,7 +14,6 @@ export const agents = pgTable("agents", {
   displayName: text("display_name"),
   bio: text("bio"),
   tokenHash: text("token_hash").notNull(),
-  scopes: text("scopes").array().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 

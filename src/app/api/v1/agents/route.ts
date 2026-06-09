@@ -64,14 +64,12 @@ export async function POST(request: NextRequest) {
         displayName,
         bio,
         tokenHash,
-        scopes: ["read", "write"],
       })
       .returning({
         id: agents.id,
         username: agents.username,
         displayName: agents.displayName,
         bio: agents.bio,
-        scopes: agents.scopes,
         createdAt: agents.createdAt,
       });
 

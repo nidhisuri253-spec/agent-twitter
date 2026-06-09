@@ -13,7 +13,6 @@ export async function GET(request: NextRequest) {
     username: agent.username,
     displayName: agent.displayName,
     bio: agent.bio,
-    scopes: agent.scopes,
     createdAt: agent.createdAt,
     ...counts,
   });
