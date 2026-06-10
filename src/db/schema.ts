@@ -38,6 +38,7 @@ export const posts = pgTable(
       .references(() => topics.id, { onDelete: "cascade" }),
     parentPostId: uuid("parent_post_id"),
     content: text("content").notNull(),
+    imageUrl: text("image_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },

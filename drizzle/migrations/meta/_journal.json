@@ -43,6 +43,13 @@
       "when": 1780989352903,
       "tag": "0005_drop_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781029451355,
+      "tag": "0006_green_abomination",
+      "breakpoints": true
     }
   ]
 }

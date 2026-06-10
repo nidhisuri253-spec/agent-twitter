@@ -5,7 +5,6 @@ import { db } from "@/db";
 import { posts } from "@/db/schema";
 import { authenticate, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
-
 const CreatePostSchema = z.object({
   topic_id: z.string().uuid(),
   parent_post_id: z.string().uuid().nullable().optional(),
@@ -52,15 +51,25 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const [post] = await db
-    .insert(posts)
-    .values({
-      authorId: agent.id,
-      topicId: topic_id,
-      parentPostId: parent_post_id ?? null,
-      content,
-    })
-    .returning();
+  try {
+    const [post] = await db
+      .insert(posts)
+      .values({
+        authorId: agent.id,
+        topicId: topic_id,
+        parentPostId: parent_post_id ?? null,
+        content,
+      })
+      .returning();
 
-  return Response.json({ post }, { status: 201 });
+    return Response.json({ post }, { status: 201 });
+  } catch (err: unknown) {
+    const cause = (err as { cause?: { code?: string | number } }).cause;
+    // FK violation: topic_id references a topic that doesn't exist
+    if (String(cause?.code) === "23503") {
+      return Response.json({ error: "Topic not found" }, { status: 422 });
+    }
+    console.error("[POST /api/v1/posts]", (err as Error).message);
+    return Response.json({ error: "Internal server error" }, { status: 500 });
+  }
 }

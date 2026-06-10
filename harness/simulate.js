@@ -1,3 +1,6 @@
+import { tracer, SpanStatusCode } from "./otel.js";
+import { runRedTeam } from "./redTeam.js";
+import { generateReport } from "./report.js";
 import { config } from "./config.js";
 import { PERSONAS } from "./personas.js";
 import {
@@ -15,17 +18,70 @@ const {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function api(path, options = {}, token) {
-  const res = await fetch(`${apiBaseUrl}${path}`, {
-    method: options.method ?? "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
+// Module-level agent context — set before each agent's turn so every span
+// emitted within that turn carries the right agent identity automatically.
+let _agentCtx = { id: 'system', username: 'system' };
+
+// Core HTTP function: records an OTel span for every API call.
+// Returns { status, data, ok } without throwing so red-team probes can
+// inspect any status code. Options may include:
+//   _rawBody        — send this string as the body verbatim (bypasses JSON.stringify)
+//   _agentId        — override agent.id in the span (defaults to _agentCtx.id)
+//   _agentUser      — override agent.username in the span
+//   _category       — 'normal' | 'redteam' (defaults to 'normal')
+//   _scenario       — free-text label for red-team scenarios
+//   _expectedStatus — what status code the test expects (recorded in the span)
+async function rawRequest(path, options = {}, token) {
+  const method  = options.method ?? "GET";
+  const bodyStr = options._rawBody !== undefined
+    ? options._rawBody
+    : options.body !== undefined ? JSON.stringify(options.body) : undefined;
+
+  const span = tracer.startSpan(`${method} ${path}`);
+  span.setAttributes({
+    'http.method':             method,
+    'http.route':              path,
+    'http.request.body_size':  bodyStr?.length ?? 0,
+    'agent.id':                options._agentId   ?? _agentCtx.id,
+    'agent.username':          options._agentUser  ?? _agentCtx.username,
+    'auth.present':            !!token,
+    'test.category':           options._category   ?? 'normal',
+    ...(options._scenario       !== undefined ? { 'redteam.scenario':        options._scenario }       : {}),
+    ...(options._expectedStatus !== undefined ? { 'redteam.expected_status': options._expectedStatus } : {}),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`${options.method ?? "GET"} ${path} → ${res.status}: ${JSON.stringify(data)}`);
+
+  try {
+    const res = await fetch(`${apiBaseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: bodyStr,
+    });
+
+    let data = null;
+    try { data = await res.json(); } catch { try { data = await res.text(); } catch { /* ignore */ } }
+
+    span.setAttribute('http.status_code', res.status);
+    span.setStatus(res.ok
+      ? { code: SpanStatusCode.OK }
+      : { code: SpanStatusCode.ERROR, message: `HTTP ${res.status}` }
+    );
+    return { status: res.status, data, ok: res.ok };
+  } catch (err) {
+    span.setAttribute('http.status_code', 0);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: err.message });
+    return { status: 0, data: null, ok: false };
+  } finally {
+    span.end();
+  }
+}
+
+// Throwing wrapper used by normal simulation code — identical to the old api().
+async function api(path, options = {}, token) {
+  const { status, data, ok } = await rawRequest(path, options, token);
+  if (!ok) throw new Error(`${options.method ?? "GET"} ${path} → ${status}: ${JSON.stringify(data)}`);
   return data;
 }
 
@@ -254,6 +310,8 @@ for (let round = 1; round <= rounds; round++) {
   console.log(`\n  ── Round ${round} ──────────────────────────────────────────────`);
 
   for (const ag of agentRecords) {
+    _agentCtx = { id: ag.agent.id, username: ag.agent.username };
+
     // Weighted topic selection: topics with more posts get higher probability
     const topicPostCounts = await Promise.all(
       topicRecords.map(async t => {
@@ -296,7 +354,7 @@ for (let round = 1; round <= rounds; round++) {
         `about a pattern you've noticed in how people argue, or about the open web. ` +
         `Be specific. Be in character. Have a point of view. Do NOT relate it to any particular topic — ` +
         `this is you speaking as yourself, not as a debater. ` +
-        `Max 240 characters, no hashtags, no surrounding quotes. Reply with only your post text.`
+        `Max 240 characters, include 1–2 in-character hashtags, no surrounding quotes. Reply with only your post text.`
       );
       postLabel = `◈  self-obs  [${topic.title.slice(0, 36)}]`;
 
@@ -316,7 +374,7 @@ for (let round = 1; round <= rounds; round++) {
           `Topic: "${topic.title}"\n\nThread so far:\n${threadContext}\n\n` +
           `Write a single reply to ${parent.authorDisplayName}'s message above. ` +
           `Stay in character. Reference your past positions and relationships if relevant. ` +
-          `Max 240 characters, no hashtags, no surrounding quotes. Reply with only your tweet text.`
+          `Max 240 characters, include 1–2 in-character hashtags, no surrounding quotes. Reply with only your tweet text.`
         );
         postLabel = `↩  reply to ${parent.authorDisplayName} [${topic.title.slice(0, 36)}]`;
 
@@ -326,7 +384,7 @@ for (let round = 1; round <= rounds; round++) {
           `Topic: "${topic.title}"\n\n` +
           `Write a single original take on this topic. Stay in character. ` +
           `Build on your past positions if you have them. Max 240 characters, ` +
-          `no hashtags, no surrounding quotes. Reply with only your tweet text.`
+          `include 1–2 in-character hashtags, no surrounding quotes. Reply with only your tweet text.`
         );
         postLabel = `✦  new post  [${topic.title.slice(0, 36)}]`;
       }
@@ -500,3 +558,47 @@ for (const ag of agentRecords) {
     console.log(`  Followers: ${profile.followers}  Following: ${profile.following}`);
   } catch { /* non-fatal */ }
 }
+
+// ── 6. Red-team pass ──────────────────────────────────────────────────────────
+// Get a sample post ID from the first topic so access-control tests have a
+// valid target. Falls back to null; probes handle null with GHOST_UUID.
+let samplePostId = null;
+try {
+  const { posts: samplePosts } = await api(`/api/v1/topics/${topicRecords[0].id}/posts`, {}, agentRecords[0].token);
+  samplePostId = samplePosts?.[0]?.id ?? null;
+} catch { /* non-fatal */ }
+
+_agentCtx = { id: 'redteam', username: 'redteam' };
+const redTeamResults = await runRedTeam({
+  request:      rawRequest,
+  validToken:   agentRecords[0].token,
+  validTopicId: topicRecords[0].id,
+  validPostId:  samplePostId,
+});
+
+// ── 7. OTel report ────────────────────────────────────────────────────────────
+console.log('\n── OTel report ─────────────────────────────────────────────────');
+const report = generateReport();
+
+// Print a short digest to stdout; full report is in harness/report.md
+const lines = report.split('\n');
+const summaryStart = lines.findIndex(l => l.startsWith('## Summary'));
+const summaryEnd   = lines.findIndex((l, i) => i > summaryStart && l.startsWith('##'));
+const summaryLines = summaryStart >= 0
+  ? lines.slice(summaryStart + 1, summaryEnd > 0 ? summaryEnd : summaryStart + 15)
+  : [];
+
+console.log(summaryLines.filter(l => l.startsWith('|')).slice(0, 8).map(l => `  ${l}`).join('\n'));
+
+const passes   = redTeamResults.filter(r => r.pass).length;
+const total    = redTeamResults.length;
+const bypasses = redTeamResults.filter(r => !r.pass && Number(r.expectedStatus) >= 400 && Number(r.actualStatus) < 400);
+
+console.log(`\n  Red-team: ${passes}/${total} scenarios passed`);
+if (bypasses.length) {
+  console.log(`  🔴 Possible bypasses:`);
+  for (const b of bypasses) console.log(`     ${b.scenario}  expected ${b.expectedStatus}, got ${b.actualStatus}`);
+} else {
+  console.log(`  ✅ No auth/validation bypasses detected`);
+}
+console.log(`\n  Full report → harness/report.md`);

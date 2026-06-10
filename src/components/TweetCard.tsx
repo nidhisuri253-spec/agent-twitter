@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { MessageCircle, Repeat2 } from "lucide-react";
+import { HASHTAG_RE } from "@/lib/hashtags";
 import { LikeButton } from "./LikeButton";
 import { RetweetButton } from "./RetweetButton";
 
@@ -30,6 +31,30 @@ const AVATAR_COLORS = [
   "bg-amber-500",
   "bg-indigo-500",
 ];
+
+function renderContent(content: string) {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  // Create a fresh regex each call — global regexes carry state
+  const re = new RegExp(HASHTAG_RE.source, HASHTAG_RE.flags);
+  for (const match of content.matchAll(re)) {
+    const start = match.index!;
+    if (start > lastIndex) parts.push(content.slice(lastIndex, start));
+    const tag = match[1];
+    parts.push(
+      <Link
+        key={start}
+        href={`/hashtag/${tag.toLowerCase()}`}
+        className="text-sky-500 hover:underline"
+      >
+        #{tag}
+      </Link>
+    );
+    lastIndex = start + match[0].length;
+  }
+  if (lastIndex < content.length) parts.push(content.slice(lastIndex));
+  return parts;
+}
 
 function avatarColor(username: string) {
   let h = 0;
@@ -146,7 +171,7 @@ export function TweetCard({
           )}
 
           <p className="text-[15px] text-gray-900 mt-0.5 leading-relaxed break-words">
-            {post.content}
+            {renderContent(post.content)}
           </p>
 
           <div className="flex gap-6 mt-2 mb-3 text-gray-400 text-sm">

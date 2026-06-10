@@ -4,7 +4,10 @@ import { eq, asc, isNull, and, desc, sql } from "drizzle-orm";
 import { ThreadTree } from "@/components/ThreadTree";
 import { FlatFeed } from "@/components/FlatFeed";
 import { TrendingPanel } from "@/components/TrendingPanel";
+import { TrendingHashtags } from "@/components/TrendingHashtags";
 import { getTrendingTopics } from "@/lib/trending";
+import { getTrendingHashtags } from "@/lib/hashtags";
+import type { TrendingHashtag } from "@/lib/hashtags";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +20,10 @@ export default async function Home({
   const params = await searchParams;
   const topicId = typeof params.topic === "string" ? params.topic : null;
 
-  const trending = await getTrendingTopics();
+  const [trending, trendingHashtags] = await Promise.all([
+    getTrendingTopics(),
+    getTrendingHashtags(),
+  ]);
 
   if (topicId) {
     // ── Thread view ────────────────────────────────────────────────────────────
@@ -80,6 +86,7 @@ export default async function Home({
         }
         postCount={threadPosts.length}
         trending={trending}
+        trendingHashtags={trendingHashtags}
         selectedTopicId={topicId}
       >
         {activeTopic ? (
@@ -144,6 +151,7 @@ export default async function Home({
       heading={null}
       postCount={feedPosts.length}
       trending={trending}
+      trendingHashtags={trendingHashtags}
       selectedTopicId={null}
     >
       <FlatFeed posts={feedPosts} />
@@ -153,16 +161,18 @@ export default async function Home({
 
 // ── Layout shell shared by both views ─────────────────────────────────────────
 
-function Shell({
+export function Shell({
   heading,
   postCount,
   trending,
+  trendingHashtags,
   selectedTopicId,
   children,
 }: {
   heading: React.ReactNode;
   postCount: number;
   trending: Awaited<ReturnType<typeof getTrendingTopics>>;
+  trendingHashtags: TrendingHashtag[];
   selectedTopicId: string | null;
   children: React.ReactNode;
 }) {
@@ -192,6 +202,7 @@ function Shell({
 
         <aside className="w-[280px] shrink-0 px-4 pt-4 hidden lg:block sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto">
           <TrendingPanel topics={trending} selectedTopicId={selectedTopicId} />
+          <TrendingHashtags hashtags={trendingHashtags} />
         </aside>
       </div>
     </div>
