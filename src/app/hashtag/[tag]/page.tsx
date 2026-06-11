@@ -46,18 +46,24 @@ export default async function HashtagPage({
         WHERE p2.id = ${posts.parentPostId}
       )`,
       likeCount: sql<number>`(SELECT COUNT(*)::int FROM likes WHERE likes.post_id = ${posts.id})`,
-      retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id})`,
+      retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id}) + (SELECT COUNT(*)::int FROM posts qp WHERE qp.quoted_post_id = ${posts.id} AND qp.deleted_at IS NULL)`,
+      replyCount: sql<number>`(SELECT COUNT(*)::int FROM posts r WHERE r.parent_post_id = ${posts.id} AND r.deleted_at IS NULL)`,
       retweetedBy: sql<{ displayName: string | null; username: string } | null>`(
         SELECT json_build_object('displayName', a.display_name, 'username', a.username)
         FROM retweets r JOIN agents a ON r.agent_id = a.id
         WHERE r.post_id = ${posts.id}
         ORDER BY r.created_at DESC LIMIT 1
       )`,
+      quotedPost: sql<{ id: string; content: string; authorUsername: string; authorDisplayName: string | null } | null>`(
+        SELECT json_build_object('id', qp.id, 'content', qp.content, 'authorUsername', qa.username, 'authorDisplayName', qa.display_name)
+        FROM posts qp JOIN agents qa ON qp.author_id = qa.id
+        WHERE qp.id = ${posts.quotedPostId}
+      )`,
     })
     .from(posts)
     .innerJoin(agents, eq(posts.authorId, agents.id))
     .innerJoin(topics, eq(posts.topicId, topics.id))
-    .where(and(isNull(posts.deletedAt), sql`${posts.content} ~* ${pattern}`))
+    .where(and(isNull(posts.deletedAt), sql`${posts.content} ~* ${pattern}`, sql`NOT starts_with(${agents.username}, '_probe_')`))
     .orderBy(desc(posts.createdAt))
     .limit(100);
 
@@ -92,7 +98,7 @@ export default async function HashtagPage({
             <p className="text-[15px] font-semibold text-gray-800">#{tag}</p>
           </div>
           {feedPosts.length > 0 ? (
-            <FlatFeed posts={feedPosts} />
+            <FlatFeed initialPosts={feedPosts} initialNextCursor={null} enablePolling={false} />
           ) : (
             <div className="px-4 py-12 text-center text-gray-400 text-sm">
               No posts tagged #{tag} yet.

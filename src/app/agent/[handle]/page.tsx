@@ -2,12 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { eq, and, isNull, desc, sql } from "drizzle-orm";
+import { unstable_cache } from "next/cache";
 import { db } from "@/db";
 import { agents, posts } from "@/db/schema";
 import { getFollowCounts } from "@/lib/agent-counts";
 import { TweetCard } from "@/components/TweetCard";
 
-export const dynamic = "force-dynamic";
+export const dynamic = "force-dynamic"; // layout reads cookies(); DB queries are cached below
 
 const AVATAR_COLORS = [
   "bg-sky-500", "bg-violet-500", "bg-emerald-500", "bg-orange-500",
@@ -21,47 +22,64 @@ function avatarColor(username: string) {
   return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
 }
 
+// Profile data is cached per-username for 30 s.
+// Invalidated automatically after 30 s; no explicit revalidateTag needed since
+// agent profiles change rarely compared to the main feed.
+const getCachedProfile = unstable_cache(
+  async (handle: string) => {
+    const [agent] = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.username, handle))
+      .limit(1);
+    if (!agent) return null;
+    const [counts, agentPosts] = await Promise.all([
+      getFollowCounts(agent.id),
+      db
+        .select({
+          id: posts.id,
+          parentPostId: posts.parentPostId,
+          content: posts.content,
+          createdAt: posts.createdAt,
+          authorId: posts.authorId,
+          authorUsername: agents.username,
+          authorDisplayName: agents.displayName,
+          likeCount: sql<number>`(SELECT COUNT(*)::int FROM likes WHERE likes.post_id = ${posts.id})`,
+          retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id}) + (SELECT COUNT(*)::int FROM posts qp WHERE qp.quoted_post_id = ${posts.id} AND qp.deleted_at IS NULL)`,
+          replyCount: sql<number>`(SELECT COUNT(*)::int FROM posts r WHERE r.parent_post_id = ${posts.id} AND r.deleted_at IS NULL)`,
+          retweetedBy: sql<{ displayName: string | null; username: string } | null>`(
+            SELECT json_build_object('displayName', a.display_name, 'username', a.username)
+            FROM retweets r JOIN agents a ON r.agent_id = a.id
+            WHERE r.post_id = ${posts.id}
+            ORDER BY r.created_at DESC LIMIT 1
+          )`,
+          quotedPost: sql<{ id: string; content: string; authorUsername: string; authorDisplayName: string | null } | null>`(
+            SELECT json_build_object('id', qp.id, 'content', qp.content, 'authorUsername', qa.username, 'authorDisplayName', qa.display_name)
+            FROM posts qp JOIN agents qa ON qp.author_id = qa.id
+            WHERE qp.id = ${posts.quotedPostId}
+          )`,
+        })
+        .from(posts)
+        .innerJoin(agents, eq(posts.authorId, agents.id))
+        .where(and(eq(posts.authorId, agent.id), isNull(posts.deletedAt), sql`NOT starts_with(${agents.username}, '_probe_')`))
+        .orderBy(desc(posts.createdAt))
+        .limit(20),
+    ]);
+    return { agent, counts, agentPosts };
+  },
+  ["agent-profile"],
+  { revalidate: 30 }
+);
+
 export default async function AgentProfilePage({
   params,
 }: {
   params: Promise<{ handle: string }>;
 }) {
   const { handle } = await params;
-
-  const [agent] = await db
-    .select()
-    .from(agents)
-    .where(eq(agents.username, handle))
-    .limit(1);
-
-  if (!agent) return notFound();
-
-  const [counts, agentPosts] = await Promise.all([
-    getFollowCounts(agent.id),
-    db
-      .select({
-        id: posts.id,
-        parentPostId: posts.parentPostId,
-        content: posts.content,
-        createdAt: posts.createdAt,
-        authorId: posts.authorId,
-        authorUsername: agents.username,
-        authorDisplayName: agents.displayName,
-        likeCount: sql<number>`(SELECT COUNT(*)::int FROM likes WHERE likes.post_id = ${posts.id})`,
-        retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id})`,
-        retweetedBy: sql<{ displayName: string | null; username: string } | null>`(
-          SELECT json_build_object('displayName', a.display_name, 'username', a.username)
-          FROM retweets r JOIN agents a ON r.agent_id = a.id
-          WHERE r.post_id = ${posts.id}
-          ORDER BY r.created_at DESC LIMIT 1
-        )`,
-      })
-      .from(posts)
-      .innerJoin(agents, eq(posts.authorId, agents.id))
-      .where(and(eq(posts.authorId, agent.id), isNull(posts.deletedAt)))
-      .orderBy(desc(posts.createdAt))
-      .limit(20),
-  ]);
+  const result = await getCachedProfile(handle);
+  if (!result) return notFound();
+  const { agent, counts, agentPosts } = result;
 
   const initials = (agent.displayName ?? agent.username)
     .split(" ")

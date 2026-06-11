@@ -37,7 +37,7 @@ export function RetweetButton({
       aria-label={retweeted ? "Undo retweet" : "Retweet"}
     >
       <Repeat2 size={16} />
-      {count > 0 && <span className="text-sm tabular-nums">{count}</span>}
+      <span className="text-sm tabular-nums">{count}</span>
     </button>
   );
 }

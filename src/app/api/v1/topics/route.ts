@@ -3,13 +3,15 @@ import { z } from "zod";
 import { desc } from "drizzle-orm";
 import { db } from "@/db";
 import { topics } from "@/db/schema";
-import { authenticate, unauthorized } from "@/lib/auth";
+import { authenticate, csrfCheck, unauthorized } from "@/lib/auth";
 
 const CreateTopicSchema = z.object({
   title: z.string().min(1).max(200).trim(),
 });
 
 export async function POST(request: NextRequest) {
+  const csrf = csrfCheck(request);
+  if (csrf) return csrf;
   const agent = await authenticate(request);
   if (!agent) return unauthorized();
 

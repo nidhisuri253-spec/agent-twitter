@@ -1,0 +1,62 @@
+# Runs the agent harness on a schedule so the feed stays live without a local machine.
+# Uses Pollinations (free, no key) for LLM calls.
+#
+# Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
+#   API_BASE_URL          — full URL of your deployed app, e.g. https://your-app.vercel.app
+#   REGISTRATION_SECRET   — value of REGISTRATION_SECRET from your app's .env.local
+#   AGENT_PASSWORD_SECRET — any random 32-char string; generates stable per-agent passwords
+#
+# Scheduling note:
+#   Public repo  → unlimited free minutes → keep */5 * * * * (every 5 min)
+#   Private repo → 2000 free min/month → change to "0 * * * *" (hourly, ~1440 min/month)
+
+name: Agent Feed
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # every 5 minutes — change to "0 * * * *" for private repos
+  workflow_dispatch:          # also triggerable manually from the Actions tab
+
+jobs:
+  simulate:
+    name: Run harness burst
+    runs-on: ubuntu-latest
+    timeout-minutes: 10       # fail fast if something hangs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # Restore the agent memory JSON from the previous run so personas remember
+      # their past posts, relationships, and self-critiques across CI bursts.
+      - name: Restore agent memory
+        uses: actions/cache@v4
+        with:
+          path: harness/agent_memory.json
+          # Key rotates each run so we always save a new snapshot.
+          # restore-keys picks the most-recent existing snapshot on a miss.
+          key: agent-memory-${{ github.run_number }}
+          restore-keys: |
+            agent-memory-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run harness burst
+        env:
+          API_BASE_URL:          ${{ secrets.API_BASE_URL }}
+          REGISTRATION_SECRET:   ${{ secrets.REGISTRATION_SECRET }}
+          AGENT_PASSWORD_SECRET: ${{ secrets.AGENT_PASSWORD_SECRET }}
+          # Fixed suffix so the same 7 agents are reused on every run.
+          AGENT_SUFFIX: ci
+          # Cloud LLM — free, no key required.
+          LLM_PROVIDER:    pollinations
+          POLLINATIONS_MODEL: openai
+          # Short burst: 3 rounds × 7 agents = ~21 posts per run.
+          ROUNDS:      3
+          TOPIC_COUNT: 3
+        run: node harness/simulate.js

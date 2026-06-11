@@ -43,7 +43,7 @@ export function LikeButton({
         fill={liked ? "currentColor" : "none"}
         className="transition-transform group-active:scale-125"
       />
-      {count > 0 && <span className="text-sm tabular-nums">{count}</span>}
+      <span className="text-sm tabular-nums">{count}</span>
     </button>
   );
 }

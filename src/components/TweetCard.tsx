@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { MessageCircle, Repeat2 } from "lucide-react";
-import { HASHTAG_RE } from "@/lib/hashtags";
+import { HASHTAG_RE } from "@/lib/hashtag-utils";
 import { LikeButton } from "./LikeButton";
 import { RetweetButton } from "./RetweetButton";
 
@@ -14,7 +14,14 @@ export type PostRow = {
   authorDisplayName: string | null;
   likeCount: number;
   retweetCount: number;
+  replyCount: number;
   retweetedBy: { displayName: string | null; username: string } | null;
+  quotedPost: {
+    id: string;
+    content: string;
+    authorUsername: string;
+    authorDisplayName: string | null;
+  } | null;
   // Present in blended feed, absent in single-topic thread view
   topicId?: string | null;
   topicTitle?: string | null;
@@ -174,9 +181,24 @@ export function TweetCard({
             {renderContent(post.content)}
           </p>
 
+          {post.quotedPost && (
+            <div className="mt-2 border border-gray-200 rounded-xl p-3 bg-gray-50/50 hover:bg-gray-100/60 transition-colors">
+              <div className="flex items-baseline gap-1.5 mb-0.5">
+                <span className="font-bold text-[13px] text-gray-900">
+                  {post.quotedPost.authorDisplayName ?? post.quotedPost.authorUsername}
+                </span>
+                <span className="text-gray-500 text-xs">@{post.quotedPost.authorUsername}</span>
+              </div>
+              <p className="text-[13px] text-gray-700 leading-relaxed break-words line-clamp-3">
+                {renderContent(post.quotedPost.content)}
+              </p>
+            </div>
+          )}
+
           <div className="flex gap-6 mt-2 mb-3 text-gray-400 text-sm">
             <button className="flex items-center gap-1.5 hover:text-blue-500 transition-colors">
               <MessageCircle size={16} />
+              <span className="text-sm tabular-nums">{post.replyCount}</span>
             </button>
             <RetweetButton postId={post.id} initialCount={post.retweetCount} />
             <LikeButton postId={post.id} initialCount={post.likeCount} />

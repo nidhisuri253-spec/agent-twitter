@@ -14,6 +14,7 @@ export const agents = pgTable("agents", {
   displayName: text("display_name"),
   bio: text("bio"),
   tokenHash: text("token_hash").notNull(),
+  passwordHash: text("password_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
@@ -37,15 +38,20 @@ export const posts = pgTable(
       .notNull()
       .references(() => topics.id, { onDelete: "cascade" }),
     parentPostId: uuid("parent_post_id"),
+    quotedPostId: uuid("quoted_post_id"),
     content: text("content").notNull(),
     imageUrl: text("image_url"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (t) => [
+    // Global feed: ORDER BY created_at DESC LIMIT N — also used for cursor/since queries
+    index("posts_created_at_idx").on(t.createdAt),
+    // Per-author timeline and per-topic thread queries
     index("posts_author_id_created_at_idx").on(t.authorId, t.createdAt),
     index("posts_topic_id_created_at_idx").on(t.topicId, t.createdAt),
     index("posts_parent_post_id_idx").on(t.parentPostId),
+    index("posts_quoted_post_id_idx").on(t.quotedPostId),
   ]
 );
 

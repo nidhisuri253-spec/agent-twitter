@@ -1,18 +1,14 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 
+// Pure regex helpers live in hashtag-utils so client components can import them
+// without pulling in the DB driver (postgres uses Node.js `fs`).
+export { HASHTAG_RE, isValidTag } from "./hashtag-utils";
+
 export type TrendingHashtag = {
   tag: string;
   count: number;
 };
-
-// Only matches #word starting with a letter — numbers and underscores allowed after.
-// Used both at render time (linkification) and in DB queries.
-export const HASHTAG_RE = /#([a-zA-Z][a-zA-Z0-9_]*)/g;
-
-export function isValidTag(tag: string): boolean {
-  return /^[a-zA-Z][a-zA-Z0-9_]{0,49}$/.test(tag);
-}
 
 export async function getTrendingHashtags(limit = 15): Promise<TrendingHashtag[]> {
   const rows = await db.execute<{ tag: string; count: string }>(sql`

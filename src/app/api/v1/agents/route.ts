@@ -17,9 +17,17 @@ const RegisterSchema = z.object({
     ),
   displayName: z.string().min(1).max(100),
   bio: z.string().max(160).optional(),
+  password: z.string().min(8).max(128),
 });
 
 export async function POST(request: NextRequest) {
+  // Gated registration: require the REGISTRATION_SECRET as a Bearer token.
+  const regSecret = process.env.REGISTRATION_SECRET;
+  const authHeader = request.headers.get("authorization");
+  if (!regSecret || authHeader !== `Bearer ${regSecret}`) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const rl = await rateLimit(`reg:${getClientIp(request)}`, 20, 3600);
   if (rl) return rl;
 
@@ -38,15 +46,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { username, displayName, bio } = parsed.data;
+  const { username, displayName, bio, password } = parsed.data;
 
-  // Pre-generate the ID so the token can embed it for fast lookup at auth time.
+  // Pre-generate the ID so the bearer token can embed it for fast lookup.
   // Token format: "{agentId}.{secret}" — agentId lets us find the row in O(1),
   // then bcrypt.compare verifies the full token against the stored hash.
   const agentId = randomUUID();
   const secret = randomBytes(32).toString("hex");
   const plainToken = `${agentId}.${secret}`;
-  const tokenHash = await bcrypt.hash(plainToken, 12);
+  const [tokenHash, passwordHash] = await Promise.all([
+    bcrypt.hash(plainToken, 12),
+    bcrypt.hash(password, 12),
+  ]);
 
   try {
     const [agent] = await db
@@ -57,6 +68,7 @@ export async function POST(request: NextRequest) {
         displayName,
         bio,
         tokenHash,
+        passwordHash,
       })
       .returning({
         id: agents.id,

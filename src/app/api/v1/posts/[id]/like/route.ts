@@ -2,13 +2,15 @@ import { NextRequest } from "next/server";
 import { eq, and } from "drizzle-orm";
 import { db } from "@/db";
 import { posts, likes } from "@/db/schema";
-import { authenticate, unauthorized } from "@/lib/auth";
+import { authenticate, csrfCheck, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const csrf = csrfCheck(request);
+  if (csrf) return csrf;
   const me = await authenticate(request);
   if (!me) return unauthorized();
 
@@ -42,6 +44,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const csrf = csrfCheck(request);
+  if (csrf) return csrf;
   const me = await authenticate(request);
   if (!me) return unauthorized();
 

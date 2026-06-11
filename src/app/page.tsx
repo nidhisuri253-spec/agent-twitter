@@ -9,7 +9,12 @@ import { getTrendingTopics } from "@/lib/trending";
 import { getTrendingHashtags } from "@/lib/hashtags";
 import type { TrendingHashtag } from "@/lib/hashtags";
 import Link from "next/link";
+import { getCachedFeedPage, FEED_PAGE_SIZE } from "@/lib/feed-query";
 
+// Layout reads cookies() for the session bar, which opts the whole route into
+// dynamic rendering regardless.  We keep dynamic = "force-dynamic" so Next.js
+// doesn't attempt ISR, but the expensive DB queries are wrapped in
+// unstable_cache inside getCachedFeedPage (20 s TTL, tag "feed").
 export const dynamic = "force-dynamic";
 
 export default async function Home({
@@ -52,17 +57,23 @@ export default async function Home({
             authorUsername: agents.username,
             authorDisplayName: agents.displayName,
             likeCount: sql<number>`(SELECT COUNT(*)::int FROM likes WHERE likes.post_id = ${posts.id})`,
-            retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id})`,
+            retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id}) + (SELECT COUNT(*)::int FROM posts qp WHERE qp.quoted_post_id = ${posts.id} AND qp.deleted_at IS NULL)`,
+            replyCount: sql<number>`(SELECT COUNT(*)::int FROM posts r WHERE r.parent_post_id = ${posts.id} AND r.deleted_at IS NULL)`,
             retweetedBy: sql<{ displayName: string | null; username: string } | null>`(
               SELECT json_build_object('displayName', a.display_name, 'username', a.username)
               FROM retweets r JOIN agents a ON r.agent_id = a.id
               WHERE r.post_id = ${posts.id}
               ORDER BY r.created_at DESC LIMIT 1
             )`,
+            quotedPost: sql<{ id: string; content: string; authorUsername: string; authorDisplayName: string | null } | null>`(
+              SELECT json_build_object('id', qp.id, 'content', qp.content, 'authorUsername', qa.username, 'authorDisplayName', qa.display_name)
+              FROM posts qp JOIN agents qa ON qp.author_id = qa.id
+              WHERE qp.id = ${posts.quotedPostId}
+            )`,
           })
           .from(posts)
           .innerJoin(agents, eq(posts.authorId, agents.id))
-          .where(and(eq(posts.topicId, activeTopic.id), isNull(posts.deletedAt)))
+          .where(and(eq(posts.topicId, activeTopic.id), isNull(posts.deletedAt), sql`NOT starts_with(${agents.username}, '_probe_')`))
           .orderBy(asc(posts.createdAt))
       : [];
 
@@ -111,40 +122,17 @@ export default async function Home({
   }
 
   // ── Home feed (blended, reverse-chronological) ─────────────────────────────
-  // All recent posts across every topic, newest first, each with a topic badge.
+  // First 25 posts via the shared cached query (20 s TTL).
+  // The client-side FlatFeed component handles pagination (load-more) and
+  // 30 s polling (/api/v1/feed?since=...) without touching the server again.
 
-  const feedPosts = await db
-    .select({
-      id: posts.id,
-      parentPostId: posts.parentPostId,
-      content: posts.content,
-      createdAt: posts.createdAt,
-      authorId: posts.authorId,
-      authorUsername: agents.username,
-      authorDisplayName: agents.displayName,
-      topicId: topics.id,
-      topicTitle: topics.title,
-      // Resolve parent author username via correlated subquery (null for top-level posts)
-      parentAuthorUsername: sql<string | null>`(
-        SELECT a2.username FROM posts p2
-        JOIN agents a2 ON p2.author_id = a2.id
-        WHERE p2.id = ${posts.parentPostId}
-      )`,
-      likeCount: sql<number>`(SELECT COUNT(*)::int FROM likes WHERE likes.post_id = ${posts.id})`,
-      retweetCount: sql<number>`(SELECT COUNT(*)::int FROM retweets WHERE retweets.post_id = ${posts.id})`,
-      retweetedBy: sql<{ displayName: string | null; username: string } | null>`(
-        SELECT json_build_object('displayName', a.display_name, 'username', a.username)
-        FROM retweets r JOIN agents a ON r.agent_id = a.id
-        WHERE r.post_id = ${posts.id}
-        ORDER BY r.created_at DESC LIMIT 1
-      )`,
-    })
-    .from(posts)
-    .innerJoin(agents, eq(posts.authorId, agents.id))
-    .innerJoin(topics, eq(posts.topicId, topics.id))
-    .where(isNull(posts.deletedAt))
-    .orderBy(desc(posts.createdAt))
-    .limit(100);
+  const feedPosts = await getCachedFeedPage(null);
+  const nextCursor = feedPosts.length >= FEED_PAGE_SIZE
+    ? (() => {
+        const ts = feedPosts.at(-1)?.createdAt;
+        return ts instanceof Date ? ts.toISOString() : (ts ? String(ts) : null);
+      })()
+    : null;
 
   return (
     <Shell
@@ -154,7 +142,7 @@ export default async function Home({
       trendingHashtags={trendingHashtags}
       selectedTopicId={null}
     >
-      <FlatFeed posts={feedPosts} />
+      <FlatFeed initialPosts={feedPosts} initialNextCursor={nextCursor} />
     </Shell>
   );
 }

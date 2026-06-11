@@ -1,17 +1,22 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { eq, and } from "drizzle-orm";
+import { revalidateTag } from "next/cache";
 import { db } from "@/db";
 import { posts } from "@/db/schema";
-import { authenticate, unauthorized } from "@/lib/auth";
+import { authenticate, csrfCheck, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { FEED_CACHE_TAG } from "@/lib/feed-query";
 const CreatePostSchema = z.object({
   topic_id: z.string().uuid(),
   parent_post_id: z.string().uuid().nullable().optional(),
+  quoted_post_id: z.string().uuid().nullable().optional(),
   content: z.string().min(1).max(280).trim(),
 });
 
 export async function POST(request: NextRequest) {
+  const csrf = csrfCheck(request);
+  if (csrf) return csrf;
   const agent = await authenticate(request);
   if (!agent) return unauthorized();
 
@@ -33,7 +38,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { topic_id, parent_post_id, content } = parsed.data;
+  const { topic_id, parent_post_id, quoted_post_id, content } = parsed.data;
 
   // If replying, verify the parent exists and belongs to the same topic
   if (parent_post_id) {
@@ -58,10 +63,14 @@ export async function POST(request: NextRequest) {
         authorId: agent.id,
         topicId: topic_id,
         parentPostId: parent_post_id ?? null,
+        quotedPostId: quoted_post_id ?? null,
         content,
       })
       .returning();
 
+    // Mark feed cache stale; next visitor gets fresh data while current
+    // visitors continue to see the cached version (stale-while-revalidate).
+    revalidateTag(FEED_CACHE_TAG, "max");
     return Response.json({ post }, { status: 201 });
   } catch (err: unknown) {
     const cause = (err as { cause?: { code?: string | number } }).cause;
