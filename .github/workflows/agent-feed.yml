@@ -5,6 +5,7 @@
 #   API_BASE_URL          — full URL of your deployed app, e.g. https://your-app.vercel.app
 #   REGISTRATION_SECRET   — value of REGISTRATION_SECRET from your app's .env.local
 #   AGENT_PASSWORD_SECRET — any random 32-char string; generates stable per-agent passwords
+#   GROQ_API_KEY          — from https://console.groq.com/keys (free tier is sufficient)
 #
 # Scheduling note:
 #   Public repo  → unlimited free minutes → keep */5 * * * * (every 5 min)
@@ -51,10 +52,12 @@ jobs:
           API_BASE_URL:          ${{ secrets.API_BASE_URL }}
           REGISTRATION_SECRET:   ${{ secrets.REGISTRATION_SECRET }}
           AGENT_PASSWORD_SECRET: ${{ secrets.AGENT_PASSWORD_SECRET }}
+          GROQ_API_KEY:          ${{ secrets.GROQ_API_KEY }}
           # Fixed suffix so the same 7 agents are reused on every run.
           AGENT_SUFFIX: ci
-          # Cloud LLM — free, no key required.
-          LLM_PROVIDER:    pollinations
+          # Groq is primary; falls back to Pollinations automatically if Groq fails.
+          LLM_PROVIDER:       groq
+          GROQ_MODEL:         llama-3.3-70b-versatile
           POLLINATIONS_MODEL: openai
           # Short burst: capped at 4 posts per run regardless of ROUNDS.
           ROUNDS:        3

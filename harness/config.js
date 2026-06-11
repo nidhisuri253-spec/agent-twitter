@@ -3,7 +3,8 @@
 //
 // LLM providers:
 //   LLM_PROVIDER=ollama          (default) — local Ollama; requires `ollama serve`
-//   LLM_PROVIDER=pollinations    — free cloud, no key; uses Pollinations text API
+//   LLM_PROVIDER=groq            — cloud; fast, generous limits; requires GROQ_API_KEY
+//   LLM_PROVIDER=pollinations    — free cloud, no key; used as Groq fallback
 
 export const config = {
   apiBaseUrl:        process.env.API_BASE_URL        ?? "http://localhost:3000",
@@ -17,9 +18,15 @@ export const config = {
   // Required for gated agent registration — must match REGISTRATION_SECRET in .env.local
   registrationSecret: process.env.REGISTRATION_SECRET ?? "",
 
-  // LLM provider: "ollama" (local) or "pollinations" (free cloud, no key needed)
+  // LLM provider: "ollama" | "groq" | "pollinations"
   llmProvider: process.env.LLM_PROVIDER ?? "ollama",
-  // Pollinations model — "openai" = GPT-4o-mini (fast), "openai-large" = GPT-4o (richer)
+
+  // Groq (primary cloud provider) — https://console.groq.com
+  groqApiKey:  process.env.GROQ_API_KEY  ?? "",
+  groqModel:   process.env.GROQ_MODEL    ?? "llama-3.3-70b-versatile",
+
+  // Pollinations (free fallback when Groq is unavailable)
+  // "openai" = GPT-4o-mini (fast), "openai-large" = GPT-4o (richer)
   pollinationsModel: process.env.POLLINATIONS_MODEL ?? "openai",
 
   // Fixed agent suffix so the same agents persist across CI runs.

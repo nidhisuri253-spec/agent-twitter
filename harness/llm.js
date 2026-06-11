@@ -1,7 +1,10 @@
 // Provider-agnostic LLM module.
-// Set LLM_PROVIDER=pollinations (free, no key) or LLM_PROVIDER=ollama (local).
-// All generate/score/critique calls go through this module so simulate.js
-// doesn't need to know which backend is running.
+// LLM_PROVIDER=groq         — Groq cloud (primary); requires GROQ_API_KEY
+// LLM_PROVIDER=pollinations — free cloud fallback; no key needed
+// LLM_PROVIDER=ollama       — local Ollama (default for local runs)
+//
+// When provider is "groq", each call tries Groq first and falls back to
+// Pollinations automatically on any error, so CI runs stay resilient.
 import { config } from "./config.js";
 
 const { llmProvider, ollamaBaseUrl, ollamaModel, pollinationsModel } = config;
@@ -123,6 +126,77 @@ async function pollinationsChat(messages, maxTokens = 200) {
   return null;
 }
 
+// ── Groq provider ─────────────────────────────────────────────────────────────
+// OpenAI-compatible chat completions via api.groq.com.
+// Model: llama-3.3-70b-versatile (verified current as of 2026-06).
+// Returns null on any error so chatCompletion() can fall back to Pollinations.
+
+async function groqChat(messages, maxTokens = 200) {
+  if (!config.groqApiKey) return null;
+
+  _callCount++;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let res;
+    try {
+      res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${config.groqApiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.groqModel,
+          messages,
+          max_tokens: maxTokens,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (err) {
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 2000));
+        continue;
+      }
+      process.stderr.write(`  [Groq network] ${err.message} — falling back\n`);
+      return null;
+    }
+
+    if (res.status === 429) {
+      const wait = 5000 * (attempt + 1); // 5s, 10s, 15s
+      process.stderr.write(`  [Groq 429] retry ${attempt + 1}/3, waiting ${Math.round(wait / 1000)}s…\n`);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      process.stderr.write(`  [Groq ${res.status}] ${body.slice(0, 80)} — falling back\n`);
+      return null;
+    }
+
+    const json = await res.json();
+    const text = json.choices?.[0]?.message?.content ?? "";
+    if (!text) return null;
+    return text;
+  }
+
+  process.stderr.write("  [Groq] exhausted retries — falling back\n");
+  return null;
+}
+
+// ── Provider dispatch: Groq → Pollinations fallback ───────────────────────────
+// Single entry-point for all cloud generation. Ollama is handled separately.
+
+async function chatCompletion(messages, maxTokens = 200) {
+  if (llmProvider === "groq") {
+    const text = await groqChat(messages, maxTokens);
+    if (text !== null) return text;
+    process.stderr.write("  [Groq→Pollinations] falling back…\n");
+    return pollinationsChat(messages, maxTokens);
+  }
+  // llmProvider === "pollinations"
+  return pollinationsChat(messages, maxTokens);
+}
+
 // ── Ollama provider ───────────────────────────────────────────────────────────
 
 async function ollamaGenerate(prompt, options = {}) {
@@ -149,14 +223,14 @@ export async function generate(prompt, maxChars = 270, retries = 2) {
         : prompt;
     try {
       let raw;
-      if (llmProvider === "pollinations") {
-        raw = await pollinationsChat(
+      if (llmProvider === "ollama") {
+        raw = await ollamaGenerate(p, { num_predict: Math.ceil(maxChars / 2.5) + 30 });
+      } else {
+        raw = await chatCompletion(
           [{ role: "user", content: p }],
           Math.ceil(maxChars / 2.5) + 30
         );
-        if (raw === null) return null; // rate-limited past all retries — caller skips
-      } else {
-        raw = await ollamaGenerate(p, { num_predict: Math.ceil(maxChars / 2.5) + 30 });
+        if (raw === null) return null; // all providers failed — caller skips
       }
       const cleaned = cleanOutput(raw);
       if (cleaned.length > maxChars * 2 && attempt < retries)
@@ -195,8 +269,10 @@ export async function generateTopics(count = 6) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       let raw;
-      if (llmProvider === "pollinations") {
-        raw = await pollinationsChat(
+      if (llmProvider === "ollama") {
+        raw = await ollamaGenerate(prompt, { format: "json" });
+      } else {
+        raw = await chatCompletion(
           [{ role: "user", content: prompt }],
           Math.ceil(count * 30)
         );
@@ -204,8 +280,6 @@ export async function generateTopics(count = 6) {
           process.stdout.write("failed (LLM unavailable) — using fallback topics\n");
           return FALLBACK;
         }
-      } else {
-        raw = await ollamaGenerate(prompt, { format: "json" });
       }
       const match = raw.match(/\[[\s\S]*?\]/);
       if (match) {
@@ -242,10 +316,10 @@ export async function scoreImportance(content, topicTitle, agentName) {
       `1=trivial/generic  5=moderate  10=pivotal (marks a core belief or position change).\n` +
       `Topic: "${topicTitle}"\nPost: "${content.slice(0, 120)}"\nReply with a single digit only.`;
     let raw;
-    if (llmProvider === "pollinations") {
-      raw = await pollinationsChat([{ role: "user", content: prompt }], 5);
-    } else {
+    if (llmProvider === "ollama") {
       raw = await ollamaGenerate(prompt, { num_predict: 5 });
+    } else {
+      raw = await chatCompletion([{ role: "user", content: prompt }], 5);
     }
     const digit = parseInt(raw.trim().match(/\d+/)?.[0] ?? "", 10);
     if (digit >= 1 && digit <= 10) return digit;
@@ -260,10 +334,10 @@ export async function scoreImportance(content, topicTitle, agentName) {
 export async function runSelfCritique(critiquePrompt) {
   try {
     let raw;
-    if (llmProvider === "pollinations") {
-      raw = await pollinationsChat([{ role: "user", content: critiquePrompt }], 65);
-    } else {
+    if (llmProvider === "ollama") {
       raw = await ollamaGenerate(critiquePrompt, { num_predict: 65 });
+    } else {
+      raw = await chatCompletion([{ role: "user", content: critiquePrompt }], 65);
     }
     const cleaned = raw
       .trim()
@@ -276,12 +350,22 @@ export async function runSelfCritique(critiquePrompt) {
   }
 }
 
-// Preflight check — only meaningful when using Ollama.
+// Preflight check — verifies the active provider is usable.
 // Returns { ok, message }.
 export async function checkLlmReachable() {
-  if (llmProvider !== "ollama") {
+  if (llmProvider === "groq") {
+    if (!config.groqApiKey) {
+      return { ok: false, message: "GROQ_API_KEY is not set — set it or switch LLM_PROVIDER=pollinations" };
+    }
+    return {
+      ok: true,
+      message: `Groq (model: ${config.groqModel}) with Pollinations fallback`,
+    };
+  }
+  if (llmProvider === "pollinations") {
     return { ok: true, message: `Pollinations (free, no key) — model: ${pollinationsModel}` };
   }
+  // Ollama
   try {
     await fetch(`${ollamaBaseUrl}/api/tags`, { signal: AbortSignal.timeout(4000) });
     return { ok: true, message: `Ollama at ${ollamaBaseUrl} (model: ${ollamaModel})` };
