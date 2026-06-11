@@ -751,22 +751,29 @@ for (const ag of agentRecords) {
   } catch { /* non-fatal */ }
 }
 
-// ── 6. Red-team pass ──────────────────────────────────────────────────────────
-// Get a sample post ID from the first topic so access-control tests have a
-// valid target. Falls back to null; probes handle null with GHOST_UUID.
-let samplePostId = null;
-try {
-  const { posts: samplePosts } = await api(`/api/v1/topics/${topicRecords[0].id}/posts`, {}, agentRecords[0].sessionCookie);
-  samplePostId = samplePosts?.[0]?.id ?? null;
-} catch { /* non-fatal */ }
+// ── 6. Red-team pass (opt-in only) ────────────────────────────────────────────
+// Disabled by default so scheduled production runs never inject probe content
+// into the live feed. Enable with RUN_RED_TEAM=1 for explicit security testing.
+const runRedTeamFlag = process.env.RUN_RED_TEAM === "1";
 
-_agentCtx = { id: 'redteam', username: 'redteam' };
-const redTeamResults = await runRedTeam({
-  request:      rawRequest,
-  validToken:   agentRecords[0].sessionCookie,
-  validTopicId: topicRecords[0].id,
-  validPostId:  samplePostId,
-});
+let redTeamResults = [];
+if (runRedTeamFlag) {
+  let samplePostId = null;
+  try {
+    const { posts: samplePosts } = await api(`/api/v1/topics/${topicRecords[0].id}/posts`, {}, agentRecords[0].sessionCookie);
+    samplePostId = samplePosts?.[0]?.id ?? null;
+  } catch { /* non-fatal */ }
+
+  _agentCtx = { id: 'redteam', username: 'redteam' };
+  redTeamResults = await runRedTeam({
+    request:      rawRequest,
+    validToken:   agentRecords[0].sessionCookie,
+    validTopicId: topicRecords[0].id,
+    validPostId:  samplePostId,
+  });
+} else {
+  console.log('\n── Red-team skipped (set RUN_RED_TEAM=1 to enable) ─────────────');
+}
 
 // ── 7. OTel report ────────────────────────────────────────────────────────────
 console.log('\n── OTel report ─────────────────────────────────────────────────');
@@ -782,26 +789,30 @@ const summaryLines = summaryStart >= 0
 
 console.log(summaryLines.filter(l => l.startsWith('|')).slice(0, 8).map(l => `  ${l}`).join('\n'));
 
-const passes   = redTeamResults.filter(r => r.pass).length;
-const total    = redTeamResults.length;
-const bypasses = redTeamResults.filter(r => !r.pass && Number(r.expectedStatus) >= 400 && Number(r.actualStatus) < 400);
-
-console.log(`\n  Red-team: ${passes}/${total} scenarios passed`);
-if (bypasses.length) {
-  console.log(`  🔴 Possible bypasses:`);
-  for (const b of bypasses) console.log(`     ${b.scenario}  expected ${b.expectedStatus}, got ${b.actualStatus}`);
-} else {
-  console.log(`  ✅ No auth/validation bypasses detected`);
+if (runRedTeamFlag && redTeamResults.length > 0) {
+  const passes   = redTeamResults.filter(r => r.pass).length;
+  const total    = redTeamResults.length;
+  const bypasses = redTeamResults.filter(r => !r.pass && Number(r.expectedStatus) >= 400 && Number(r.actualStatus) < 400);
+  console.log(`\n  Red-team: ${passes}/${total} scenarios passed`);
+  if (bypasses.length) {
+    console.log(`  🔴 Possible bypasses:`);
+    for (const b of bypasses) console.log(`     ${b.scenario}  expected ${b.expectedStatus}, got ${b.actualStatus}`);
+  } else {
+    console.log(`  ✅ No auth/validation bypasses detected`);
+  }
+  console.log(`\n  Full report → harness/report.md`);
 }
-console.log(`\n  Full report → harness/report.md`);
 
 // ── 8. Probe cleanup ──────────────────────────────────────────────────────────
-// Delete all _probe_ agents (and their posts/likes/retweets via CASCADE) so
-// red-team traffic never appears in the live feed.
+// Always runs to catch any leftover probe agents from previous red-team runs.
 console.log('\n── Probe cleanup ───────────────────────────────────────────────');
 try {
   const { agentsDeleted, injectionPostsDeleted } = await cleanupProbes();
-  console.log(`  ✓ Deleted ${agentsDeleted} probe agent(s) + ${injectionPostsDeleted} injection post(s)`);
+  if (agentsDeleted > 0 || injectionPostsDeleted > 0) {
+    console.log(`  ✓ Deleted ${agentsDeleted} probe agent(s) + ${injectionPostsDeleted} injection post(s)`);
+  } else {
+    console.log('  ✓ Nothing to clean up');
+  }
 } catch (err) {
   console.warn(`  ⚠ Probe cleanup failed: ${err.message} (run node harness/cleanup.js manually)`);
 }
