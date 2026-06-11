@@ -31,4 +31,8 @@ export const config = {
   // CI runs without storing individual passwords.
   // Leave empty for local runs (random password, fresh agents each time).
   agentPasswordSecret: process.env.AGENT_PASSWORD_SECRET ?? "",
+
+  // Hard cap on new posts created per run. Keeps Pollinations call counts low
+  // on GitHub Actions where the shared IP is more likely to hit rate limits.
+  postsPerRun: parseInt(process.env.POSTS_PER_RUN ?? "4"),
 };

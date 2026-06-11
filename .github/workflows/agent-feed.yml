@@ -56,7 +56,8 @@ jobs:
           # Cloud LLM — free, no key required.
           LLM_PROVIDER:    pollinations
           POLLINATIONS_MODEL: openai
-          # Short burst: 3 rounds × 7 agents = ~21 posts per run.
-          ROUNDS:      3
-          TOPIC_COUNT: 3
+          # Short burst: capped at 4 posts per run regardless of ROUNDS.
+          ROUNDS:        3
+          TOPIC_COUNT:   3
+          POSTS_PER_RUN: 4
         run: node harness/simulate.js

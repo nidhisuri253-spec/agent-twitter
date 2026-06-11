@@ -33,46 +33,100 @@ function smartTrim(text, maxChars) {
   return window.trim();
 }
 
+// ── Per-run LLM call counter ──────────────────────────────────────────────────
+let _callCount = 0;
+export function getLlmCallCount()   { return _callCount; }
+export function resetLlmCallCount() { _callCount = 0; }
+
 // ── Pollinations provider ─────────────────────────────────────────────────────
 // Free text generation via https://text.pollinations.ai/openai (OpenAI-compatible).
 // No API key required. `private: true` keeps prompts off their public gallery.
+//
+// Rate-limit strategy:
+//   • Enforce a 3-8 s random gap between consecutive calls (inter-call jitter)
+//     so GitHub Actions shared-IP bursts don't exceed Pollinations' queue.
+//   • On HTTP 429: exponential back-off 1.5 s × 2^attempt + up to 10 s jitter,
+//     capped at ~40 s per retry, up to 6 attempts total.
+//   • Returns null (never throws) after all retries are exhausted so the
+//     caller can skip the generation gracefully instead of crashing.
+
+let _lastPollCall = 0; // ms timestamp of the last call start
 
 async function pollinationsChat(messages, maxTokens = 200) {
-  // 429 = shared-IP queue full; back off and retry up to 3 times.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const res = await fetch("https://text.pollinations.ai/openai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: pollinationsModel,
-        messages,
-        max_tokens: maxTokens,
-        private: true,
-        seed: Math.floor(Math.random() * 99999),
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
+  // Wait for the minimum inter-call gap before issuing the next request.
+  const since  = Date.now() - _lastPollCall;
+  const minGap = 3000 + Math.floor(Math.random() * 5000); // 3-8 s
+  if (_lastPollCall > 0 && since < minGap) {
+    await new Promise((r) => setTimeout(r, minGap - since));
+  }
+  _lastPollCall = Date.now();
+  _callCount++;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    let res;
+    try {
+      res = await fetch("https://text.pollinations.ai/openai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: pollinationsModel,
+          messages,
+          max_tokens: maxTokens,
+          private: true,
+          seed: Math.floor(Math.random() * 99999),
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (err) {
+      if (attempt < 5) {
+        const wait = 3000 + Math.floor(Math.random() * 4000);
+        process.stderr.write(`  [Pollinations network] ${err.message} — retry ${attempt + 1}/6 in ${Math.round(wait / 1000)}s\n`);
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      process.stderr.write("  [Pollinations] all retries failed (network) — skipping\n");
+      return null;
+    }
+
     if (res.status === 429) {
-      const wait = (attempt + 1) * 3000;
-      process.stderr.write(`  [Pollinations 429] backing off ${wait / 1000}s…\n`);
+      const base = Math.min(30_000, 1500 * Math.pow(2, attempt)); // 1.5s → 3s → 6s → 12s → 24s → 30s
+      const wait = base + Math.floor(Math.random() * 10_000);     // + up to 10 s jitter
+      process.stderr.write(`  [Pollinations 429] retry ${attempt + 1}/6, backing off ${Math.round(wait / 1000)}s…\n`);
       await new Promise((r) => setTimeout(r, wait));
       continue;
     }
+
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Pollinations ${res.status}: ${body.slice(0, 120)}`);
+      process.stderr.write(`  [Pollinations ${res.status}] ${body.slice(0, 80)}\n`);
+      if (attempt < 5) {
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      process.stderr.write(`  [Pollinations] all retries failed (HTTP ${res.status}) — skipping\n`);
+      return null;
     }
+
     const json = await res.json();
     const text = json.choices?.[0]?.message?.content ?? "";
-    if (!text) throw new Error("Pollinations returned empty response");
+    if (!text) {
+      if (attempt < 5) {
+        await new Promise((r) => setTimeout(r, 1500));
+        continue;
+      }
+      return null;
+    }
     return text;
   }
-  throw new Error("Pollinations: too many 429 retries");
+
+  process.stderr.write("  [Pollinations] exhausted all retries — skipping\n");
+  return null;
 }
 
 // ── Ollama provider ───────────────────────────────────────────────────────────
 
 async function ollamaGenerate(prompt, options = {}) {
+  _callCount++;
   const res = await fetch(`${ollamaBaseUrl}/api/generate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -100,6 +154,7 @@ export async function generate(prompt, maxChars = 270, retries = 2) {
           [{ role: "user", content: p }],
           Math.ceil(maxChars / 2.5) + 30
         );
+        if (raw === null) return null; // rate-limited past all retries — caller skips
       } else {
         raw = await ollamaGenerate(p, { num_predict: Math.ceil(maxChars / 2.5) + 30 });
       }
@@ -145,6 +200,10 @@ export async function generateTopics(count = 6) {
           [{ role: "user", content: prompt }],
           Math.ceil(count * 30)
         );
+        if (raw === null) {
+          process.stdout.write("failed (LLM unavailable) — using fallback topics\n");
+          return FALLBACK;
+        }
       } else {
         raw = await ollamaGenerate(prompt, { format: "json" });
       }

@@ -184,6 +184,19 @@ export function setRegistration(memory, slug, { id, username }) {
   memory._registrations[slug] = { id, username };
 }
 
+// ── Agent bio persistence ─────────────────────────────────────────────────────
+// Stored under memory._bios[slug]. Generated once; reused on every subsequent
+// run so bio-generation LLM calls don't happen on every CI burst.
+
+export function getBio(memory, slug) {
+  return memory._bios?.[slug] ?? null;
+}
+
+export function setBio(memory, slug, bio) {
+  if (!memory._bios) memory._bios = {};
+  memory._bios[slug] = bio;
+}
+
 // ── Context builders ──────────────────────────────────────────────────────────
 
 // Build the memory context block injected between persona and task.

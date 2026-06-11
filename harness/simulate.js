@@ -11,9 +11,11 @@ import {
   buildMemoryContext, buildReflectionTreePrompt, buildReflectionPrompt, buildSelfCritiquePrompt,
   retrieveWeighted,
   getRegistration, setRegistration,
+  getBio, setBio,
 } from "./memory.js";
 import {
   generate, generateTopics, scoreImportance, runSelfCritique, checkLlmReachable,
+  getLlmCallCount,
 } from "./llm.js";
 
 const {
@@ -21,6 +23,7 @@ const {
   rounds, replyProbability, reflectionEvery, topicCount,
   selfObservationProbability,
   agentSuffix, agentPasswordSecret,
+  postsPerRun,
 } = config;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -246,15 +249,26 @@ for (const p of PERSONAS) {
     agent = { id: knownReg.id, username: agentUsername };
     process.stdout.write(`  ↩ Reusing @${agentUsername} (from memory)\n`);
   } else {
-    // Register fresh — generate a memory-consistent bio first.
-    process.stdout.write(`  Generating bio for ${p.displayName}… `);
-    const memCtx = buildMemoryContext(getAgentMemory(memory, p.slug, p.defaultHumanView));
-    const bio = await generate(
-      `${p.persona}${memCtx}\n\nWrite a Twitter-style bio for yourself in first person. ` +
-      `Under 140 characters — END with a COMPLETE sentence, never mid-word. No hashtags, no surrounding quotes. Reply with only the bio text.`,
-      140
-    );
-    process.stdout.write("done\n");
+    // Register fresh — reuse persisted bio if available, generate otherwise.
+    let bio = getBio(memory, p.slug);
+    if (bio) {
+      process.stdout.write(`  ↩ Reusing bio for ${p.displayName} (from memory)\n`);
+    } else {
+      process.stdout.write(`  Generating bio for ${p.displayName}… `);
+      const memCtx = buildMemoryContext(getAgentMemory(memory, p.slug, p.defaultHumanView));
+      bio = await generate(
+        `${p.persona}${memCtx}\n\nWrite a Twitter-style bio for yourself in first person. ` +
+        `Under 140 characters — END with a COMPLETE sentence, never mid-word. No hashtags, no surrounding quotes. Reply with only the bio text.`,
+        140
+      );
+      if (bio) {
+        setBio(memory, p.slug, bio);
+        process.stdout.write("done\n");
+      } else {
+        bio = p.displayName; // minimal fallback when LLM is unavailable
+        process.stdout.write("failed — using display name as fallback\n");
+      }
+    }
 
     try {
       const result = await api("/api/v1/agents", {
@@ -342,11 +356,13 @@ async function followIfNew(follower, targetId) {
 
 let totalPosts   = 0;
 let totalReplies = 0;
+let postsThisRun = 0;
+let done         = false; // set when postsPerRun cap is reached
 
 console.log(`\n── ${rounds} rounds × ${agentRecords.length} agents × ${topicRecords.length} topics ─────────────────────`);
-console.log(`   Reflection every ${reflectionEvery} rounds\n`);
+console.log(`   Reflection every ${reflectionEvery} rounds | postsPerRun cap: ${postsPerRun}\n`);
 
-for (let round = 1; round <= rounds; round++) {
+for (let round = 1; round <= rounds && !done; round++) {
   console.log(`\n  ── Round ${round} ──────────────────────────────────────────────`);
 
   for (const ag of agentRecords) {
@@ -446,6 +462,11 @@ for (let round = 1; round <= rounds; round++) {
       }
     }
 
+    if (!content) {
+      console.log(`    [${ag.displayName.padEnd(16)}] skipped — LLM unavailable`);
+      continue;
+    }
+
     const { post } = await api("/api/v1/posts", {
       method: "POST",
       body: {
@@ -456,6 +477,7 @@ for (let round = 1; round <= rounds; round++) {
     }, ag.sessionCookie);
 
     totalPosts++;
+    postsThisRun++;
     if (parent) totalReplies++;
 
     // Score importance (1-10) — awaited so the score is stored before the next round.
@@ -485,6 +507,12 @@ for (let round = 1; round <= rounds; round++) {
     if (selfCritique) console.log(`      ⟳ critique: "${selfCritique.slice(0, 90)}"`);
     console.log(`    [${ag.displayName.padEnd(16)}] ${postLabel}${memTag}  imp=${importance}`);
     console.log(`      "${content.slice(0, 110)}${content.length > 110 ? "…" : ""}"`);
+
+    if (postsThisRun >= postsPerRun) {
+      console.log(`\n  ↳ postsPerRun cap (${postsPerRun}) reached — stopping early`);
+      done = true;
+      break;
+    }
 
     // ── Heat-weighted engagement pass ──────────────────────────────────────────
     // Build a combined pool from all topics for this agent's engagement turn.
@@ -543,7 +571,7 @@ for (let round = 1; round <= rounds; round++) {
   // Two-pass: (1) reflection tree — synthesizes beliefs, topics, agent relations;
   //           (2) legacy flat reflection — for humanView extraction.
 
-  if (round % reflectionEvery === 0) {
+  if (round % reflectionEvery === 0 && !done) {
     console.log(`\n  ── Reflection Tree (end of round ${round}) ──────────────────────`);
     const otherNames  = agentRecords.map(a => a.displayName);
     const topicTitles = topicRecords.map(t => t.title);
@@ -560,6 +588,7 @@ for (let round = 1; round <= rounds; round++) {
       process.stdout.write(`    [${ag.displayName.padEnd(16)}] building tree… `);
       try {
         const treeRaw  = await generate(buildReflectionTreePrompt(ag.persona, mem, peerNames, topicTitles), 750);
+        if (!treeRaw) { process.stdout.write("skipped (LLM unavailable)\n"); continue; }
         const tree     = parseReflectionTree(treeRaw, topicTitles, peerNames);
         setReflectionTree(memory, ag.slug, tree);
         process.stdout.write("done\n");
@@ -591,6 +620,7 @@ for (let round = 1; round <= rounds; round++) {
       // ── Pass 2: Legacy reflection for humanView extraction ───────────────────
       try {
         const raw       = await generate(buildReflectionPrompt(ag.persona, mem), 500);
+        if (!raw) continue; // LLM unavailable — skip humanView update
         const hvMatch   = raw.match(/HUMAN_VIEW:\s*(.{10,200})/i);
         const humanView = hvMatch ? hvMatch[1].trim().replace(/^["']|["']$/g, "") : null;
         const cleanRefl = raw.replace(/HUMAN_VIEW:.*/is, "").trim();
@@ -674,6 +704,7 @@ console.log(`  Follows made: ${followedPairs.size}`);
 console.log(`  Likes made  : ${likedPairs.size}`);
 console.log(`  Retweets    : ${retweetedPairs.size}`);
 console.log(`  Rounds      : ${rounds}`);
+console.log(`  LLM calls   : ${getLlmCallCount()} (this run)`);
 
 console.log("\n  Memory snapshots:");
 for (const ag of agentRecords) {
