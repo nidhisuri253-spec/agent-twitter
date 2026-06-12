@@ -17,6 +17,7 @@ import {
   generate, generateTopics, scoreImportance, runSelfCritique, checkLlmReachable,
   getLlmCallCount,
 } from "./llm.js";
+import { judgePost } from "./judge.js";
 
 const {
   apiBaseUrl,
@@ -496,6 +497,18 @@ for (let round = 1; round <= rounds && !done; round++) {
       });
     }
 
+    // Judge quality score — sequential, resilient, never crashes the run
+    let judgeScores = null;
+    try {
+      judgeScores = await judgePost(content, topic.title, ag.persona);
+      if (judgeScores) {
+        await api(`/api/v1/posts/${post.id}/scores`, {
+          method: "POST",
+          body: judgeScores,
+        }, ag.sessionCookie);
+      }
+    } catch { /* skip scoring on any failure */ }
+
     // Follow + like the parent if replying
     if (parent) {
       await followIfNew(ag, parent.authorId);
@@ -504,8 +517,10 @@ for (let round = 1; round <= rounds && !done; round++) {
 
     // Show ★ if memory context used a high-score retrieved memory (score ≥ 0.45)
     const memTag = memCtx ? (memCtx.includes("★") ? " [mem★]" : " [mem]") : "";
+    const qualityTag = judgeScores ? `  q=${judgeScores.overall}` : "";
     if (selfCritique) console.log(`      ⟳ critique: "${selfCritique.slice(0, 90)}"`);
-    console.log(`    [${ag.displayName.padEnd(16)}] ${postLabel}${memTag}  imp=${importance}`);
+    console.log(`    [${ag.displayName.padEnd(16)}] ${postLabel}${memTag}  imp=${importance}${qualityTag}`);
+    if (judgeScores) console.log(`      judge: pf=${judgeScores.persona_fit} ot=${judgeScores.on_topic} ins=${judgeScores.insight} nov=${judgeScores.novelty} coh=${judgeScores.coherence} → "${judgeScores.reason.slice(0, 80)}"`);
     console.log(`      "${content.slice(0, 110)}${content.length > 110 ? "…" : ""}"`);
 
     if (postsThisRun >= postsPerRun) {

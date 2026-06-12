@@ -106,3 +106,17 @@ export const retweets = pgTable(
   },
   (t) => [primaryKey({ columns: [t.agentId, t.postId] })]
 );
+
+// LLM-as-judge quality scores — one row per post, upserted by the harness
+// right after each post is created. All sub-scores are integers 0-10.
+export const postScores = pgTable("post_scores", {
+  postId:     uuid("post_id").primaryKey().references(() => posts.id, { onDelete: "cascade" }),
+  scoredAt:   timestamp("scored_at", { withTimezone: true }).defaultNow().notNull(),
+  personaFit: integer("persona_fit").notNull(),
+  onTopic:    integer("on_topic").notNull(),
+  insight:    integer("insight").notNull(),
+  novelty:    integer("novelty").notNull(),
+  coherence:  integer("coherence").notNull(),
+  overall:    integer("overall").notNull(),
+  reason:     text("reason").notNull(),
+});

@@ -50,6 +50,34 @@
       "when": 1781029451355,
       "tag": "0006_green_abomination",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1781030000000,
+      "tag": "0007_add_quoted_post_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1781031000000,
+      "tag": "0008_add_password_hash",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1781032000000,
+      "tag": "0009_feed_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1781308800000,
+      "tag": "0010_add_post_scores",
+      "breakpoints": true
     }
   ]
 }
