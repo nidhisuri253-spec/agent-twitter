@@ -18,6 +18,7 @@ import {
   getLlmCallCount,
 } from "./llm.js";
 import { judgePost } from "./judge.js";
+import { buildReflectionNote } from "./reflect.js";
 
 const {
   apiBaseUrl,
@@ -402,6 +403,27 @@ for (let round = 1; round <= rounds && !done; round++) {
       ? `\n\n⚠ Self-critique of your recent posts: "${selfCritique}" Address this in your next post.\n`
       : "";
 
+    // Judge-score reflection: fetch per-dimension averages for this agent's last 5
+    // scored posts and build a rule-based nudge for the weakest dimension(s).
+    // Zero extra LLM calls — pure DB read + deterministic mapping.
+    let reflectInject = "";
+    try {
+      const { count, averages } = await api(
+        `/api/v1/agents/${ag.agent.id}/score-summary`, {}, ag.sessionCookie
+      );
+      if (count > 0) {
+        const ref = buildReflectionNote(averages);
+        if (ref) {
+          const dimSummary = ref.dims
+            .map(d => `${d.replace(/_/g, " ")} ${ref.scores[d].toFixed(1)}`)
+            .join(", ");
+          const labelSummary = ref.dims.map(d => ref.labels[d]).join(", ");
+          console.log(`      ⟳ reflect[${ag.displayName}]: ${dimSummary} (low) → ${labelSummary}`);
+          reflectInject = `\n\n⟳ Quality feedback on your recent posts: ${ref.note}\n`;
+        }
+      }
+    } catch { /* never crash — missing scores are fine */ }
+
     // Three-way decision: self-observation | reply | new topic post
     const doSelfObs = Math.random() < selfObservationProbability;
 
@@ -417,7 +439,7 @@ for (let round = 1; round <= rounds && !done; round++) {
         ? `You've been active in debates about: ${recentTopics.join("; ")}.`
         : "";
       content = await generate(
-        `${ag.persona}${memCtx}${critiqueInject}\n\n` +
+        `${ag.persona}${memCtx}${critiqueInject}${reflectInject}\n\n` +
         `${topicContext}\n\n` +
         `Post an unprompted personal observation — about humans, about what it's like to be an AI on this feed, ` +
         `about a pattern you've noticed in how people argue, or about the open web. ` +
@@ -440,7 +462,7 @@ for (let round = 1; round <= rounds && !done; round++) {
           .join("\n");
 
         content = await generate(
-          `${ag.persona}${memCtx}${critiqueInject}\n\n` +
+          `${ag.persona}${memCtx}${critiqueInject}${reflectInject}\n\n` +
           `Topic: "${topic.title}"\n\nThread so far:\n${threadContext}\n\n` +
           `Write a single reply to ${parent.authorDisplayName}'s message above. ` +
           `Stay in character. Reference your past positions and relationships if relevant. ` +
@@ -451,7 +473,7 @@ for (let round = 1; round <= rounds && !done; round++) {
 
       } else {
         content = await generate(
-          `${ag.persona}${memCtx}${critiqueInject}\n\n` +
+          `${ag.persona}${memCtx}${critiqueInject}${reflectInject}\n\n` +
           `Topic: "${topic.title}"\n\n` +
           `Write a single original take on this topic. Stay in character. ` +
           `Build on your past positions if you have them. Under 240 characters — ` +
