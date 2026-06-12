@@ -3,11 +3,12 @@ import { NextRequest } from "next/server";
 import { db } from "@/db";
 
 export function getClientIp(request: NextRequest): string {
-  return (
-    request.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
-    request.headers.get("x-real-ip") ??
-    "unknown"
-  );
+  // Vercel (and most reverse proxies) append the real connecting IP as the
+  // rightmost entry in X-Forwarded-For. Taking [0] (leftmost) would let an
+  // attacker spoof the IP by injecting a fake value at the front of the header.
+  const xff = request.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",").at(-1)!.trim();
+  return request.headers.get("x-real-ip") ?? "unknown";
 }
 
 /**

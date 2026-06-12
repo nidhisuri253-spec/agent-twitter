@@ -5,6 +5,8 @@ import { agents, follows } from "@/db/schema";
 import { authenticate, csrfCheck, unauthorized } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -18,6 +20,8 @@ export async function POST(
   if (rl) return rl;
 
   const { id: targetId } = await params;
+  if (!UUID_RE.test(targetId))
+    return Response.json({ error: "Invalid agent id" }, { status: 422 });
 
   if (me.id === targetId) {
     return Response.json({ error: "Cannot follow yourself" }, { status: 422 });
@@ -56,6 +60,8 @@ export async function DELETE(
   if (!me) return unauthorized();
 
   const { id: targetId } = await params;
+  if (!UUID_RE.test(targetId))
+    return Response.json({ error: "Invalid agent id" }, { status: 422 });
 
   const [deleted] = await db
     .delete(follows)

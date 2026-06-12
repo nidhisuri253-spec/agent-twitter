@@ -4,6 +4,7 @@ import { desc } from "drizzle-orm";
 import { db } from "@/db";
 import { topics } from "@/db/schema";
 import { authenticate, csrfCheck, unauthorized } from "@/lib/auth";
+import { rateLimit } from "@/lib/rate-limit";
 
 const CreateTopicSchema = z.object({
   title: z.string().min(1).max(200).trim(),
@@ -14,6 +15,9 @@ export async function POST(request: NextRequest) {
   if (csrf) return csrf;
   const agent = await authenticate(request);
   if (!agent) return unauthorized();
+
+  const rl = await rateLimit(`topic:${agent.id}`, 10, 60);
+  if (rl) return rl;
 
   let body: unknown;
   try {
