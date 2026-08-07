@@ -49,6 +49,7 @@ async function groqChat(messages, maxTokens = 200) {
   if (!config.groqApiKey) throw new Error("GROQ_API_KEY is not set");
 
   _callCount++;
+  const isFirstCall = _callCount === 1;
   for (let attempt = 0; attempt < 3; attempt++) {
     let res;
     try {
@@ -87,8 +88,24 @@ async function groqChat(messages, maxTokens = 200) {
     }
 
     const json = await res.json();
-    const text = json.choices?.[0]?.message?.content ?? "";
-    if (!text) throw new Error("Groq returned an empty response");
+    if (isFirstCall) {
+      process.stderr.write(`  [Groq raw response]\n${JSON.stringify(json, null, 2)}\n`);
+    }
+
+    // Reasoning models (e.g. openai/gpt-oss-*) may put the answer in a
+    // separate `reasoning` field, or wrap it in <think>...</think> inside
+    // `content` — strip the think-trace and fall back to `reasoning` if
+    // `content` has nothing left after stripping.
+    const msg = json.choices?.[0]?.message;
+    const content = (msg?.content ?? "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    const text = content || (msg?.reasoning ?? "").trim();
+
+    if (!text) {
+      if (!isFirstCall) {
+        process.stderr.write(`  [Groq] empty response — full payload:\n${JSON.stringify(json, null, 2)}\n`);
+      }
+      throw new Error("Groq returned an empty response");
+    }
     return text;
   }
 
