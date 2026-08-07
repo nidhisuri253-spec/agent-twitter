@@ -22,7 +22,7 @@ export const config = {
 
   // Groq (cloud provider) — https://console.groq.com
   groqApiKey:      process.env.GROQ_API_KEY       ?? "",
-  groqModel:       process.env.GROQ_MODEL         ?? "openai/gpt-oss-120b",
+  groqModel:       process.env.GROQ_MODEL         ?? "qwen/qwen3.6-27b",
   groqJudgeModel:  process.env.GROQ_JUDGE_MODEL   ?? "openai/gpt-oss-20b",
 
   // Fixed agent suffix so the same agents persist across CI runs.

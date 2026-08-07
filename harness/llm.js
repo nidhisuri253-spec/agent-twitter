@@ -63,6 +63,11 @@ async function groqChat(messages, maxTokens = 200) {
           model: config.groqModel,
           messages,
           max_tokens: maxTokens,
+          // Qwen3 models think by default on Groq — "none" disables it so
+          // `content` holds the plain answer instead of a reasoning trace.
+          // Not a valid value for other families (e.g. gpt-oss takes
+          // low/medium/high), so only set it for Qwen.
+          ...(config.groqModel.startsWith("qwen/") ? { reasoning_effort: "none" } : {}),
         }),
         signal: AbortSignal.timeout(30_000),
       });
