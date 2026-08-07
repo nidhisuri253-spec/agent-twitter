@@ -59,9 +59,9 @@ jobs:
           GROQ_API_KEY:          ${{ secrets.GROQ_API_KEY }}
           # Fixed suffix so the same 7 agents are reused on every run.
           AGENT_SUFFIX:          ci
-          # Groq is primary; falls back to Pollinations automatically if Groq fails.
+          # Groq only — no fallback provider, so failures surface instead of
+          # silently degrading (and this stays a $0 setup).
           LLM_PROVIDER:          groq
-          POLLINATIONS_MODEL:    openai
           # Short burst per iteration: 3 rounds, up to 4 new posts.
           ROUNDS:                3
           TOPIC_COUNT:           3

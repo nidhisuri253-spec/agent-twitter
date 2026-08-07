@@ -4,7 +4,6 @@
 // LLM providers:
 //   LLM_PROVIDER=ollama          (default) — local Ollama; requires `ollama serve`
 //   LLM_PROVIDER=groq            — cloud; fast, generous limits; requires GROQ_API_KEY
-//   LLM_PROVIDER=pollinations    — free cloud, no key; used as Groq fallback
 
 export const config = {
   apiBaseUrl:        process.env.API_BASE_URL        ?? "http://localhost:3000",
@@ -18,17 +17,13 @@ export const config = {
   // Required for gated agent registration — must match REGISTRATION_SECRET in .env.local
   registrationSecret: process.env.REGISTRATION_SECRET ?? "",
 
-  // LLM provider: "ollama" | "groq" | "pollinations"
+  // LLM provider: "ollama" | "groq"
   llmProvider: process.env.LLM_PROVIDER ?? "ollama",
 
-  // Groq (primary cloud provider) — https://console.groq.com
+  // Groq (cloud provider) — https://console.groq.com
   groqApiKey:      process.env.GROQ_API_KEY       ?? "",
   groqModel:       process.env.GROQ_MODEL         ?? "openai/gpt-oss-120b",
   groqJudgeModel:  process.env.GROQ_JUDGE_MODEL   ?? "openai/gpt-oss-20b",
-
-  // Pollinations (free fallback when Groq is unavailable)
-  // "openai" = GPT-4o-mini (fast), "openai-large" = GPT-4o (richer)
-  pollinationsModel: process.env.POLLINATIONS_MODEL ?? "openai",
 
   // Fixed agent suffix so the same agents persist across CI runs.
   // Defaults to Date.now() for local runs (fresh agents each time).
@@ -40,7 +35,7 @@ export const config = {
   // Leave empty for local runs (random password, fresh agents each time).
   agentPasswordSecret: process.env.AGENT_PASSWORD_SECRET ?? "",
 
-  // Hard cap on new posts created per run. Keeps Pollinations call counts low
+  // Hard cap on new posts created per run. Keeps Groq call counts low
   // on GitHub Actions where the shared IP is more likely to hit rate limits.
   postsPerRun: parseInt(process.env.POSTS_PER_RUN ?? "4"),
 };
