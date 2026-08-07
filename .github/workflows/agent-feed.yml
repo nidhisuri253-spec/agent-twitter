@@ -1,39 +1,30 @@
 # ─── Agent Feed Heartbeat ──────────────────────────────────────────────────────
-# Self-sustaining loop: runs the harness every ~10 minutes for up to 5 h 40 min,
-# then optionally re-dispatches itself so the feed never goes stale.
+# Runs the harness once per trigger: register/reuse agents, seed topics, run a
+# short burst of simulation rounds, then exit. Scheduled every 20 minutes.
 #
 # Required GitHub Actions secrets (Settings → Secrets and variables → Actions):
 #   API_BASE_URL          — full URL of your deployed app, e.g. https://your-app.vercel.app
 #   REGISTRATION_SECRET   — matches REGISTRATION_SECRET in your app's environment
 #   AGENT_PASSWORD_SECRET — stable HMAC key for deterministic per-agent passwords
 #   GROQ_API_KEY          — from https://console.groq.com/keys (free tier sufficient)
-#
-# Optional secret for self-dispatch (keeps the loop alive without relying on cron):
-#   DISPATCH_PAT  — fine-grained PAT with "Actions: write" on this repo.
-#                   If absent, the schedule cron acts as the restart heartbeat.
-#
-# Scheduling note:
-#   Public repo  → unlimited free minutes → cron stays at */5 (backup trigger)
-#   Private repo → 2000 free min/month    → change cron to "0 * * * *" (hourly)
 
 name: Agent Feed
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # backup heartbeat — starts a new loop if none is running
+    - cron: "*/20 * * * *"   # one tick every 20 minutes
   workflow_dispatch:          # manual trigger from the Actions tab
 
-# Only one loop runs at a time.  New triggers queue (cancel-in-progress: false)
-# and start as soon as the current run finishes, ensuring a seamless handoff.
+# Cancel any in-progress run when a new trigger fires, so runs never pile up.
 concurrency:
   group: agent-feed-loop
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   simulate:
-    name: Heartbeat loop
+    name: Heartbeat tick
     runs-on: ubuntu-latest
-    timeout-minutes: 360      # GitHub's 6-hour cap; loop exits at 5 h 40 min
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +35,7 @@ jobs:
           cache: "npm"
 
       # Restore agent memory so personas remember their past posts, relationships,
-      # and self-critiques across loop iterations AND across job restarts.
+      # and self-critiques across ticks.
       - name: Restore agent memory
         uses: actions/cache@v4
         with:
@@ -58,11 +49,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ── Main loop ─────────────────────────────────────────────────────────────
-      # Runs the harness (generation + judge + reflection), sleeps 10 min, repeats.
-      # Exits cleanly at 5 h 40 min, leaving 20 min of margin before the 6 h limit.
-      # Harness failures are non-fatal: the loop logs them and continues.
-      - name: Run heartbeat loop
+      # ── Single tick ────────────────────────────────────────────────────────────
+      # Runs the harness (generation + judge + reflection) exactly once and exits.
+      - name: Run harness
         env:
           API_BASE_URL:          ${{ secrets.API_BASE_URL }}
           REGISTRATION_SECRET:   ${{ secrets.REGISTRATION_SECRET }}
@@ -72,81 +61,9 @@ jobs:
           AGENT_SUFFIX:          ci
           # Groq is primary; falls back to Pollinations automatically if Groq fails.
           LLM_PROVIDER:          groq
-          GROQ_MODEL:            llama-3.3-70b-versatile
           POLLINATIONS_MODEL:    openai
           # Short burst per iteration: 3 rounds, up to 4 new posts.
           ROUNDS:                3
           TOPIC_COUNT:           3
           POSTS_PER_RUN:         4
-        run: |
-          set -euo pipefail
-
-          LOOP_START=$(date +%s)
-          LOOP_MAX=20400    # 5 h 40 min = 340 min = 20 400 s
-          SLEEP_SECS=600    # 10 min between harness runs
-          ITERATION=0
-
-          echo "Heartbeat loop started at $(date -u)"
-          echo "Will run until ${LOOP_MAX}s elapsed, then hand off to next loop."
-          echo ""
-
-          while true; do
-            ELAPSED=$(( $(date +%s) - LOOP_START ))
-
-            if [ "$ELAPSED" -ge "$LOOP_MAX" ]; then
-              echo "Time limit reached after ${ELAPSED}s — exiting loop."
-              break
-            fi
-
-            ITERATION=$(( ITERATION + 1 ))
-            echo "══ Iteration ${ITERATION} · elapsed ${ELAPSED}s ($(( ELAPSED / 60 ))m) ══════════"
-
-            node harness/simulate.js \
-              || echo "⚠  Harness exited non-zero on iteration ${ITERATION} — continuing loop"
-
-            ELAPSED=$(( $(date +%s) - LOOP_START ))
-
-            # Skip the final sleep if there is not enough time left for another full cycle.
-            if [ "$ELAPSED" -ge "$(( LOOP_MAX - SLEEP_SECS ))" ]; then
-              echo "Too close to time limit (${ELAPSED}s elapsed) — skipping sleep, exiting loop."
-              break
-            fi
-
-            echo "Sleeping ${SLEEP_SECS}s (10 min)... elapsed=${ELAPSED}s, remaining=$(( LOOP_MAX - ELAPSED ))s"
-            sleep "$SLEEP_SECS"
-            echo ""
-          done
-
-          TOTAL=$(( $(date +%s) - LOOP_START ))
-          echo ""
-          echo "Loop finished: ${ITERATION} iteration(s) over ${TOTAL}s ($(( TOTAL / 60 ))m)."
-
-      # ── Self-dispatch ─────────────────────────────────────────────────────────
-      # Re-triggers this workflow so the next loop starts immediately after this
-      # one ends with no gap.  Requires a PAT with Actions:write scope on this repo
-      # — the default GITHUB_TOKEN cannot trigger new workflow runs.
-      # Skipped gracefully when DISPATCH_PAT is not set; the schedule cron picks up.
-      - name: Re-dispatch next loop
-        if: always()
-        env:
-          DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
-        run: |
-          if [ -z "${DISPATCH_PAT:-}" ]; then
-            echo "DISPATCH_PAT not set — schedule cron will restart the loop within 5 min."
-            exit 0
-          fi
-
-          echo "Dispatching next loop via PAT..."
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer ${DISPATCH_PAT}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            https://api.github.com/repos/nidhisuri253-spec/agent-twitter/actions/workflows/agent-feed.yml/dispatches \
-            -d '{"ref":"main"}')
-
-          if [ "$HTTP_STATUS" -eq 204 ]; then
-            echo "✓ Next loop dispatched (HTTP 204)"
-          else
-            echo "⚠  Dispatch returned HTTP ${HTTP_STATUS} — schedule cron will restart the loop"
-          fi
+        run: node harness/simulate.js

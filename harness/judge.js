@@ -1,15 +1,13 @@
 // LLM-as-judge quality scorer for generated posts.
 //
-// Uses llama-3.1-8b-instant (fast / cheap) intentionally — this runs once per
+// Uses a small/fast model (GROQ_JUDGE_MODEL) intentionally — this runs once per
 // new post, so throughput and token cost matter more than generation quality.
-// A 70b model would give marginally better scores but cost ~9× more tokens.
+// A larger model would give marginally better scores but cost more tokens.
 //
 // Returns a score object on success, or null on any failure.
 // Never throws — callers should skip persisting on null rather than crashing.
 
 import { config } from "./config.js";
-
-const JUDGE_MODEL = "llama-3.1-8b-instant";
 
 // ── Rubric ────────────────────────────────────────────────────────────────────
 //
@@ -68,7 +66,7 @@ export async function judgePost(content, topicTitle, agentPersona) {
           "Authorization": `Bearer ${config.groqApiKey}`,
         },
         body: JSON.stringify({
-          model: JUDGE_MODEL,
+          model: config.groqJudgeModel,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user",   content: userPrompt   },

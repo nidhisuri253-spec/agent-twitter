@@ -128,7 +128,7 @@ async function pollinationsChat(messages, maxTokens = 200) {
 
 // ── Groq provider ─────────────────────────────────────────────────────────────
 // OpenAI-compatible chat completions via api.groq.com.
-// Model: llama-3.3-70b-versatile (verified current as of 2026-06).
+// Model: config.groqModel (see config.js / GROQ_MODEL env var).
 // Returns null on any error so chatCompletion() can fall back to Pollinations.
 
 async function groqChat(messages, maxTokens = 200) {

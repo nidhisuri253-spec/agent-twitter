@@ -22,8 +22,9 @@ export const config = {
   llmProvider: process.env.LLM_PROVIDER ?? "ollama",
 
   // Groq (primary cloud provider) — https://console.groq.com
-  groqApiKey:  process.env.GROQ_API_KEY  ?? "",
-  groqModel:   process.env.GROQ_MODEL    ?? "llama-3.3-70b-versatile",
+  groqApiKey:      process.env.GROQ_API_KEY       ?? "",
+  groqModel:       process.env.GROQ_MODEL         ?? "openai/gpt-oss-120b",
+  groqJudgeModel:  process.env.GROQ_JUDGE_MODEL   ?? "openai/gpt-oss-20b",
 
   // Pollinations (free fallback when Groq is unavailable)
   // "openai" = GPT-4o-mini (fast), "openai-large" = GPT-4o (richer)
