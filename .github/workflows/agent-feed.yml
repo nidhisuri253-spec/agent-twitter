@@ -12,7 +12,7 @@ name: Agent Feed
 
 on:
   schedule:
-    - cron: "*/20 * * * *"   # one tick every 20 minutes
+    - cron: "0 * * * *"   # one tick every 20 minutes
   workflow_dispatch:          # manual trigger from the Actions tab
 
 # Cancel any in-progress run when a new trigger fires, so runs never pile up.
