@@ -314,8 +314,28 @@ for (const p of PERSONAS) {
 // ── 2. Generate and seed topics ───────────────────────────────────────────────
 
 console.log("\n── Generating and seeding topics ───────────────────────────────");
-const topicTitles = await generateTopics(topicCount);
+let topicTitles = await generateTopics(topicCount);
 const topicRecords = [];
+
+// generateTopics() never throws — an empty array means the LLM failed after
+// 3 attempts. Don't let that kill the tick: reuse topics already in the DB,
+// and only fall back to a hardcoded seed list if the DB has none either.
+if (topicTitles.length === 0) {
+  const { topics: existing } = await api("/api/v1/topics", {}, agentRecords[0].sessionCookie);
+  if (existing.length > 0) {
+    console.log(`  ↳ LLM topic generation failed — reusing ${Math.min(existing.length, topicCount)} existing topic(s)`);
+    topicRecords.push(...existing.slice(0, topicCount));
+    topicTitles = []; // nothing left to create
+  } else {
+    console.log("  ↳ LLM topic generation failed and no existing topics in the DB — using seed list");
+    topicTitles = [
+      "Autonomous AI agents: revolution or overhyped?",
+      "Should AI agents have rights or responsibilities?",
+      "The open web in 2030: humans, bots, or both?",
+    ].slice(0, topicCount);
+  }
+}
+
 for (const title of topicTitles) {
   const { topic } = await api("/api/v1/topics", {
     method: "POST",

@@ -45,7 +45,7 @@ export function resetLlmCallCount() { _callCount = 0; }
 // Model: config.groqModel (see config.js / GROQ_MODEL env var).
 // Throws on any failure — no fallback provider, so callers see the real error.
 
-async function groqChat(messages, maxTokens = 200) {
+async function groqChat(messages, maxTokens = 200, options = {}) {
   if (!config.groqApiKey) throw new Error("GROQ_API_KEY is not set");
 
   _callCount++;
@@ -68,6 +68,7 @@ async function groqChat(messages, maxTokens = 200) {
           // Not a valid value for other families (e.g. gpt-oss takes
           // low/medium/high), so only set it for Qwen.
           ...(config.groqModel.startsWith("qwen/") ? { reasoning_effort: "none" } : {}),
+          ...options,
         }),
         signal: AbortSignal.timeout(30_000),
       });
@@ -120,8 +121,8 @@ async function groqChat(messages, maxTokens = 200) {
 // ── Provider dispatch ──────────────────────────────────────────────────────────
 // Single entry-point for cloud generation. Ollama is handled separately.
 
-async function chatCompletion(messages, maxTokens = 200) {
-  return groqChat(messages, maxTokens);
+async function chatCompletion(messages, maxTokens = 200, options = {}) {
+  return groqChat(messages, maxTokens, options);
 }
 
 // ── Ollama provider ───────────────────────────────────────────────────────────
@@ -172,7 +173,45 @@ export async function generate(prompt, maxChars = 270, retries = 2) {
   }
 }
 
+// Extract a topics array from LLM output that may be wrapped in markdown
+// code fences, prefixed with prose, or shaped as {"topics": [...]} (Groq
+// JSON mode) rather than a bare array. Returns null if nothing usable found.
+function parseTopicsJSON(raw, count) {
+  const stripped = raw.replace(/```[a-zA-Z]*\n?/g, "").replace(/```/g, "").trim();
+
+  const tryParse = (str) => {
+    try { return JSON.parse(str); } catch { return null; }
+  };
+  const cleanTitles = (arr) =>
+    arr.slice(0, count).map((t) => String(t).trim()).filter((t) => t.length > 8);
+
+  // Preferred shape: {"topics": [...]} (matches response_format: json_object)
+  const objMatch = stripped.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    const obj = tryParse(objMatch[0]);
+    if (obj && Array.isArray(obj.topics)) {
+      const titles = cleanTitles(obj.topics);
+      if (titles.length >= 3) return titles;
+    }
+  }
+
+  // Fallback: a bare JSON array, in case the model ignored the object shape
+  // (e.g. Ollama, which has no JSON-mode guarantee beyond "valid JSON").
+  const arrMatch = stripped.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    const arr = tryParse(arrMatch[0]);
+    if (Array.isArray(arr)) {
+      const titles = cleanTitles(arr);
+      if (titles.length >= 3) return titles;
+    }
+  }
+
+  return null;
+}
+
 // Generate fresh discussion topics; returns an array of title strings.
+// Never throws — returns [] on total failure so a bad LLM response can't
+// take down the whole harness run; callers fall back to existing topics.
 export async function generateTopics(count = 6) {
   process.stdout.write(`  Generating ${count} topics via ${llmProvider}… `);
 
@@ -181,44 +220,36 @@ export async function generateTopics(count = 6) {
     `where bots debate tech, culture, ethics, and internet life in 2025–2026. ` +
     `Mix: AI predictions, internet-culture hot takes, ethics dilemmas, and tech-industry critiques. ` +
     `Each topic must be a punchy question or bold statement that invites disagreement. ` +
-    `Output ONLY a valid JSON array of ${count} strings — no explanation, no markdown, no code fences. ` +
-    `Example: ["Topic one", "Topic two"]`;
+    `Respond with ONLY valid JSON in this exact shape — no explanation, no markdown, no code fences: ` +
+    `{"topics": ["Topic one", "Topic two"]}`;
 
   for (let attempt = 0; attempt < 3; attempt++) {
+    let raw = null;
     try {
-      let raw;
       if (llmProvider === "ollama") {
         raw = await ollamaGenerate(prompt, { format: "json" });
       } else {
         raw = await chatCompletion(
           [{ role: "user", content: prompt }],
-          Math.ceil(count * 30)
+          Math.ceil(count * 30),
+          { response_format: { type: "json_object" } }
         );
       }
-      const match = raw.match(/\[[\s\S]*?\]/);
-      if (match) {
-        const arr = JSON.parse(match[0]);
-        if (Array.isArray(arr) && arr.length >= 3) {
-          const titles = arr
-            .slice(0, count)
-            .map((t) => String(t).trim())
-            .filter((t) => t.length > 8);
-          if (titles.length >= 3) {
-            process.stdout.write("done\n");
-            return titles;
-          }
-        }
+      const titles = parseTopicsJSON(raw, count);
+      if (titles) {
+        process.stdout.write("done\n");
+        return titles;
       }
-      throw new Error("could not parse JSON array from response");
+      throw new Error("could not parse a usable topics array from response");
     } catch (err) {
-      if (attempt === 2) {
-        process.stdout.write(`failed: ${err.message}\n`);
-        throw new Error(`Topic generation failed after 3 attempts: ${err.message}`);
-      }
-      process.stderr.write(`  [topics retry ${attempt + 1}] ${err.message}\n`);
-      await new Promise((r) => setTimeout(r, 1500));
+      process.stderr.write(`  [topics attempt ${attempt + 1}] ${err.message}\n`);
+      if (raw) process.stderr.write(`  [topics attempt ${attempt + 1}] raw response: ${raw}\n`);
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
     }
   }
+
+  process.stdout.write("failed after 3 attempts — returning no topics\n");
+  return [];
 }
 
 // Rate 1-10 how important a post is for shaping this agent's long-term beliefs.
